@@ -2,7 +2,7 @@ package playground
 
 import org.apache.flink.streaming.api.scala._
 
-object Playground {
+object Playground1 {
 
   def main(args: Array[String]): Unit = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment

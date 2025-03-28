@@ -12,7 +12,7 @@
           </set>
         </option>
         <option name="resolveSbtClassifiers" value="true" />
-        <option name="sbtVersion" value="1.10.11" />
+        <option name="sbtVersion" value="1.6.2" />
         <option name="separateProdAndTestSources" value="true" />
       </SbtProjectSettings>
     </option>
