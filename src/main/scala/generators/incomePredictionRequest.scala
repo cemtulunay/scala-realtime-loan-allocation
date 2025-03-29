@@ -2,9 +2,11 @@ package generators
 
 import org.apache.flink.streaming.api.functions.source.{RichParallelSourceFunction, SourceFunction}
 import org.apache.flink.streaming.api.watermark.Watermark
+
 import java.util.UUID
 import java.time.Instant
 import scala.annotation.tailrec
+import scala.util.Random
 
 
 case class incomePredictionRequest(
@@ -13,7 +15,8 @@ case class incomePredictionRequest(
                                     customerId: Option[String],
                                     prospectId: Option[String],
                                     requestedAt: Instant,
-                                    incomeSource: String  // "real-time" for prospects, "batch" for customers
+                                    incomeSource: String,  // "real-time" for prospects, "batch" for customers
+                                    isCustomer: Boolean
                                   )
 
 class incomePredictionRequestGenerator(
@@ -37,15 +40,16 @@ class incomePredictionRequestGenerator(
   }
 
   private def generateEvent(id: Long): incomePredictionRequest = {
-    val isProspect = scala.util.Random.nextBoolean()
+    val isCustomer = Random.nextDouble() < 0.8 // 80% chance of being a customer
 
     incomePredictionRequest(
       requestId = Some(UUID.randomUUID().toString),
       applicationId = Some(UUID.randomUUID().toString),
-      customerId = if (!isProspect) Some(UUID.randomUUID().toString) else None,
-      prospectId = if (isProspect) Some(UUID.randomUUID().toString) else None,
+      customerId = if (isCustomer) Some((Random.nextInt(999999) + 1000000).toString) else None,
+      prospectId = if (!isCustomer) Some((Random.nextInt(8000000) + 2000000).toString) else None,
       requestedAt = baseInstant.plusSeconds(id),
-      incomeSource = if (isProspect) "real-time" else "batch"
+      incomeSource = if (isCustomer) "batch" else "real-time",
+      isCustomer
     )
   }
 
