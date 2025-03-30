@@ -1,30 +1,35 @@
 package loan
 
 import generators.{incomePredictionRequest, incomePredictionRequestGenerator}
+import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.streaming.api.scala._
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer
 import org.apache.flink.util.Collector
 
-object loanDecisionService_20240329 {
+import java.util.Properties
 
-  def demoValueState(): Unit = {
+object loanDecisionService_20240330_0052 {
 
+  def incomePredictionRequestProducer(): Unit = {
+
+    // 1-) Setup Environment and add Data generator as a Source
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     val incomePredictionRequestEvents = env.addSource(
       new incomePredictionRequestGenerator(
         sleepMillisPerEvent = 100, // ~ 10 events/s
       )
     )
-
     //val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.requestId.getOrElse("unknown"))
     val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
 
     /** ****************************************************************************************************************************************************
-     *  2-) STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
+     *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
      * **************************************************************************************************************************************************** */
 
+    // 2-) Create Event Stream
     val numEventsPerRequestStream = eventsPerRequest.process(
       new KeyedProcessFunction[String, incomePredictionRequest, String] {
 
@@ -53,12 +58,25 @@ object loanDecisionService_20240329 {
       }
     )
 
+    // 3-) Instantiate Kafka Producer
+    val kafkaProps = new Properties()
+    kafkaProps.setProperty("bootstrap.servers", "localhost:9092") // Kafka broker
+
+    val kafkaProducer = new FlinkKafkaProducer[String](
+      "income_prediction_request",         // Kafka topic
+      new SimpleStringSchema(),            // Serialize data as String
+      kafkaProps
+    )
+
+    // 4-) Pass Stream (That is created with Data generator) to Kafka Producer
+    numEventsPerRequestStream.addSink(kafkaProducer)
     numEventsPerRequestStream.print()
+
     env.execute()
   }
 
   def main(args: Array[String]): Unit = {
-    demoValueState()
+    incomePredictionRequestProducer()
   }
 }
 
