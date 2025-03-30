@@ -11,4 +11,8 @@
     <root level="ERROR">
         <appender-ref ref="STDOUT" />
     </root>
+
+    <!-- Specific loggers -->
+    <logger name="org.apache.flink.api.scala.ClosureCleaner$" level="ERROR" />
+    <logger name="org.apache.flink.api.java.ClosureCleaner" level="ERROR" />
 </configuration>

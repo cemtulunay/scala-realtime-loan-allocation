@@ -1,18 +1,75 @@
 package loan
 
-import org.apache.flink.streaming.api.scala.{KeyedStream, StreamExecutionEnvironment}
 import generators.{incomePredictionRequest, incomePredictionRequestGenerator}
-import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaSerializationSchema}
 import org.apache.flink.util.Collector
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.avro.io.EncoderFactory
+import org.apache.avro.Schema
+import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
 
+import java.io.ByteArrayOutputStream
 import java.util.Properties
 
+
 object loanDecisionService {
+
+  // Create Avro schema for incomePredictionRequest
+  val SCHEMA_STRING =
+    """
+      |{
+      |  "type": "record",
+      |  "name": "IncomePredictionRequest",
+      |  "namespace": "loan",
+      |  "fields": [
+      |    {"name": "requestId", "type": ["string"]},
+      |    {"name": "applicationId", "type": ["null", "string"], "default": null},
+      |    {"name": "customerId", "type": ["null", "string"], "default": null},
+      |    {"name": "prospectId", "type": ["null", "string"], "default": null},
+      |    {"name": "requestedAt", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+      |    {"name": "incomeSource", "type": ["null","string"], "default": null}
+      |  ]
+      |}
+    """.stripMargin
+
+  val SCHEMA = new Schema.Parser().parse(SCHEMA_STRING)
+
+  // Custom Kafka serialization schema for Avro
+  class AvroKafkaSerializationSchema extends KafkaSerializationSchema[incomePredictionRequest] {
+    override def serialize(element: incomePredictionRequest, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
+      val byteArrayOutputStream = new ByteArrayOutputStream()
+      val encoder = EncoderFactory.get().binaryEncoder(byteArrayOutputStream, null)
+
+      // Since incomePredictionRequest is not an Avro SpecificRecord, we use GenericDatumWriter
+      val writer = new GenericDatumWriter[GenericRecord](SCHEMA)
+
+      // Convert our case class to a GenericRecord
+      val record = new GenericData.Record(SCHEMA)
+      record.put("requestId", element.requestId.orNull)
+      record.put("applicationId", element.applicationId.orNull)
+      record.put("customerId", element.customerId.orNull)
+      record.put("prospectId", element.prospectId.orNull)
+      record.put("requestedAt", element.requestedAt.toEpochMilli)
+      record.put("incomeSource", element.incomeSource)
+
+      writer.write(record, encoder)
+      encoder.flush()
+
+      val avroBytes = byteArrayOutputStream.toByteArray
+      byteArrayOutputStream.close()
+
+      // Return Kafka record with null key and Avro data as value
+      new ProducerRecord[Array[Byte], Array[Byte]](
+        "income_prediction_request",  // topic
+        avroBytes                     // key
+      )
+
+    }
+  }
 
   def incomePredictionRequestProducer(): Unit = {
 
@@ -23,16 +80,16 @@ object loanDecisionService {
         sleepMillisPerEvent = 100, // ~ 10 events/s
       )
     )
-    //val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.requestId.getOrElse("unknown"))
-    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
+    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] =
+      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
 
     /** ****************************************************************************************************************************************************
      *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
      * **************************************************************************************************************************************************** */
 
     // 2-) Create Event Stream
-    val numEventsPerRequestStream = eventsPerRequest.process(
-      new KeyedProcessFunction[String, incomePredictionRequest, String] {
+    val processedRequests = eventsPerRequest.process(
+      new KeyedProcessFunction[String, incomePredictionRequest, incomePredictionRequest] {
 
         var stateCounter: ValueState[Long] = _
 
@@ -44,35 +101,38 @@ object loanDecisionService {
 
         override def processElement(
                                      value: incomePredictionRequest,
-                                     ctx: KeyedProcessFunction[String, incomePredictionRequest, String]#Context,
-                                     out: Collector[String]
+                                     ctx: KeyedProcessFunction[String, incomePredictionRequest, incomePredictionRequest]#Context,
+                                     out: Collector[incomePredictionRequest]
                                    ): Unit = {
-
           val currentState = Option(stateCounter.value()).getOrElse(0L) // If state is null, use 0L
 
           // Update state with the new count
           stateCounter.update(currentState + 1)
 
-          // Collect the output
-          out.collect(s"request ${value.requestId.getOrElse("unknown")} - ${currentState + 1} - customer ${value.customerId.getOrElse("0")}")
+          // For debugging, print to stdout
+          //println(s"request ${value.requestId.getOrElse("unknown")} - ${currentState + 1} - customer ${value.customerId.getOrElse("0")}")
+
+          // Forward the original request to Kafka
+          out.collect(value)
         }
       }
     )
 
-    // 3-) Instantiate Kafka Producer
-    val kafkaProps = new Properties()
-    kafkaProps.setProperty("bootstrap.servers", "localhost:9092") // Kafka broker
 
-    val kafkaProducer = new FlinkKafkaProducer[String](
-      "income_prediction_request",         // Kafka topic
-      new SimpleStringSchema(),            // Serialize data as String
-      kafkaProps
+    // 3-) Instantiate Kafka Producer with Avro serialization
+    val kafkaProps = new Properties()
+    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
+    kafkaProps.setProperty("transaction.timeout.ms", "5000")
+
+    val kafkaProducer = new FlinkKafkaProducer[incomePredictionRequest](
+      "income_prediction_request",        // default topic
+      new AvroKafkaSerializationSchema(), // serialize as Avro
+      kafkaProps,
+      FlinkKafkaProducer.Semantic.EXACTLY_ONCE
     )
 
-    // 4-) Pass Stream (That is created with Data generator) to Kafka Producer
-    numEventsPerRequestStream.addSink(kafkaProducer)
-    numEventsPerRequestStream.print()
-
+    // 4-) Pass Stream to Kafka Producer
+    processedRequests.addSink(kafkaProducer)
     env.execute()
   }
 
@@ -80,5 +140,3 @@ object loanDecisionService {
     incomePredictionRequestProducer()
   }
 }
-
-

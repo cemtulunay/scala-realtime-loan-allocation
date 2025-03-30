@@ -12,10 +12,11 @@ val flinkDependencies = Seq(
   "org.apache.flink" %% "flink-clients" % flinkVersion,
   "org.apache.flink" %% "flink-scala" % flinkVersion,
   "org.apache.flink" %% "flink-streaming-scala" % flinkVersion,
+  "org.apache.avro" % "avro" % "1.10.2"
 )
 
 val flinkConnectors = Seq(
-  "org.apache.flink" %% "flink-connector-kafka" % flinkVersion,
+  "org.apache.flink" %% "flink-connector-kafka" % flinkVersion excludeAll(ExclusionRule(organization = "org.apache.avro")),
   "org.apache.flink" %% "flink-connector-cassandra" % flinkVersion,
   "org.apache.flink" %% "flink-connector-jdbc" % flinkVersion,
   "org.postgresql" % "postgresql" % postgresVersion
