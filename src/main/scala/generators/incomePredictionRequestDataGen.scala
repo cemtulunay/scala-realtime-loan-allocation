@@ -14,7 +14,7 @@ case class incomePredictionRequest(
                                     applicationId: Option[String],
                                     customerId: Option[String],
                                     prospectId: Option[String],
-                                    requestedAt: Instant,
+                                    requestedAt: Long,
                                     incomeSource: String,  // "real-time" for prospects, "batch" for customers
                                     isCustomer: Boolean
                                   )
@@ -32,7 +32,7 @@ class incomePredictionRequestGenerator(
     if (running) {
       val event = generateEvent(id)
       ctx.collect(event)
-      ctx.emitWatermark(new Watermark(event.requestedAt.toEpochMilli))
+      ctx.emitWatermark(new Watermark(event.requestedAt))
       Thread.sleep(sleepMillisPerEvent)
       if (id % 10 == 0) extraDelayInMillisOnEveryTenEvents.foreach(Thread.sleep)
       run(id + 1, ctx)
@@ -47,7 +47,7 @@ class incomePredictionRequestGenerator(
       applicationId = Some(UUID.randomUUID().toString),
       customerId = if (isCustomer) Some((Random.nextInt(999999) + 1000000).toString) else None,
       prospectId = if (!isCustomer) Some((Random.nextInt(8000000) + 2000000).toString) else None,
-      requestedAt = baseInstant.plusSeconds(id),
+      requestedAt = baseInstant.plusSeconds(id).toEpochMilli,
       incomeSource = if (isCustomer) "batch" else "real-time",
       isCustomer
     )

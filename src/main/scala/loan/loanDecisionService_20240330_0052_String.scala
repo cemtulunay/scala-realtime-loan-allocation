@@ -11,7 +11,7 @@ import org.apache.flink.util.Collector
 
 import java.util.Properties
 
-object loanDecisionService_20240330_0052 {
+object loanDecisionService_20240330_0052_String {
 
   def incomePredictionRequestProducer(): Unit = {
 

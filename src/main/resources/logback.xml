@@ -12,6 +12,12 @@
         <appender-ref ref="STDOUT" />
     </root>
 
+    <!-- Suppress Flink debug and info logs -->
+    <logger name="org.apache.flink" level="ERROR" />
+    <logger name="org.apache.flink.runtime" level="ERROR" />
+    <logger name="org.apache.flink.runtime.dispatcher" level="ERROR" />
+    <logger name="org.apache.flink.runtime.rest" level="ERROR" />
+
     <!-- Specific loggers -->
     <logger name="org.apache.flink.api.scala.ClosureCleaner$" level="ERROR" />
     <logger name="org.apache.flink.api.java.ClosureCleaner" level="ERROR" />
