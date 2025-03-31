@@ -12,7 +12,8 @@ val flinkDependencies = Seq(
   "org.apache.flink" %% "flink-clients" % flinkVersion,
   "org.apache.flink" %% "flink-scala" % flinkVersion,
   "org.apache.flink" %% "flink-streaming-scala" % flinkVersion,
-  "org.apache.avro" % "avro" % "1.10.2"
+  "org.apache.avro" % "avro" % "1.10.2",
+  "org.json4s" %% "json4s-jackson" % "4.0.6"
 )
 
 val flinkConnectors = Seq(
