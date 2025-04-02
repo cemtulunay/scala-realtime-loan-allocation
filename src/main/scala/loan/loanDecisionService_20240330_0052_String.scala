@@ -22,8 +22,7 @@ object loanDecisionService_20240330_0052_String {
         sleepMillisPerEvent = 100, // ~ 10 events/s
       )
     )
-    //val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.requestId.getOrElse("unknown"))
-    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
+    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
 
     /** ****************************************************************************************************************************************************
      *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
@@ -53,7 +52,7 @@ object loanDecisionService_20240330_0052_String {
           stateCounter.update(currentState + 1)
 
           // Collect the output
-          out.collect(s"request ${value.requestId.getOrElse("unknown")} - ${currentState + 1} - customer ${value.customerId.getOrElse("0")}")
+          out.collect(s"request ${value.requestId.getOrElse("unknown")} - ${currentState + 1} - customer ${value.customerId.getOrElse(0).toString}")
         }
       }
     )

@@ -12,10 +12,10 @@ import scala.util.Random
 case class incomePredictionRequest(
                                     requestId: Option[String],
                                     applicationId: Option[String],
-                                    customerId: Option[String],
-                                    prospectId: Option[String],
-                                    requestedAt: Long,
-                                    incomeSource: String,  // "real-time" for prospects, "batch" for customers
+                                    customerId: Option[Int],
+                                    prospectId: Option[Int],
+                                    requestedAt: Option[Long],
+                                    incomeSource: String,          // "real-time" for prospects, "batch" for customers
                                     isCustomer: Boolean
                                   )
 
@@ -32,7 +32,7 @@ class incomePredictionRequestGenerator(
     if (running) {
       val event = generateEvent(id)
       ctx.collect(event)
-      ctx.emitWatermark(new Watermark(event.requestedAt))
+      ctx.emitWatermark(new Watermark(event.requestedAt.getOrElse(0L)))
       Thread.sleep(sleepMillisPerEvent)
       if (id % 10 == 0) extraDelayInMillisOnEveryTenEvents.foreach(Thread.sleep)
       run(id + 1, ctx)
@@ -45,10 +45,10 @@ class incomePredictionRequestGenerator(
     incomePredictionRequest(
       requestId = Some(UUID.randomUUID().toString),
       applicationId = Some(UUID.randomUUID().toString),
-      customerId = if (isCustomer) Some((Random.nextInt(999999) + 1000000).toString) else None,
-      prospectId = if (!isCustomer) Some((Random.nextInt(8000000) + 2000000).toString) else None,
-      requestedAt = baseInstant.plusSeconds(id).toEpochMilli,
-      incomeSource = if (isCustomer) "batch" else "real-time",
+      customerId = if (isCustomer) Some(Random.nextInt(999999) + 1000000) else Some(0),
+      prospectId = if (!isCustomer) Some(Random.nextInt(999999) + 2000000) else Some(0),
+      requestedAt = Some(baseInstant.plusSeconds(id).toEpochMilli),
+      incomeSource = if (isCustomer) "real-time" else "batch",
       isCustomer
     )
   }

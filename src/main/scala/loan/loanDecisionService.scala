@@ -1,6 +1,9 @@
 package loan
 
 import generators.{incomePredictionRequest, incomePredictionRequestGenerator}
+import org.apache.avro.Schema
+import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
+import org.apache.avro.io.EncoderFactory
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
@@ -8,9 +11,6 @@ import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaSerializationSchema}
 import org.apache.flink.util.Collector
 import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.avro.io.EncoderFactory
-import org.apache.avro.Schema
-import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
 
 import java.io.ByteArrayOutputStream
 import java.util.Properties
@@ -27,11 +27,12 @@ object loanDecisionService {
       |  "namespace": "loan",
       |  "fields": [
       |    {"name": "requestId", "type": ["string"]},
-      |    {"name": "applicationId", "type": ["null", "string"], "default": null},
-      |    {"name": "customerId", "type": ["null", "string"], "default": null},
-      |    {"name": "prospectId", "type": ["null", "string"], "default": null},
-      |    {"name": "requestedAt", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
-      |    {"name": "incomeSource", "type": ["null","string"], "default": null}
+      |    {"name": "applicationId", "type": ["string"]},
+      |    {"name": "customerId", "type": ["int"]},
+      |    {"name": "prospectId", "type": ["int"]},
+      |    {"name": "requestedAt", "type": ["long"]},
+      |    {"name": "incomeSource", "type": ["null","string"], "default": null},
+      |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
       |  ]
       |}
     """.stripMargin
@@ -42,7 +43,7 @@ object loanDecisionService {
   class AvroKafkaSerializationSchema extends KafkaSerializationSchema[incomePredictionRequest] {
     override def serialize(element: incomePredictionRequest, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
       val byteArrayOutputStream = new ByteArrayOutputStream()
-      val encoder = EncoderFactory.get().binaryEncoder(byteArrayOutputStream, null)
+      val encoder = EncoderFactory.get().blockingBinaryEncoder(byteArrayOutputStream, null)
 
       // Since incomePredictionRequest is not an Avro SpecificRecord, we use GenericDatumWriter
       val writer = new GenericDatumWriter[GenericRecord](SCHEMA)
@@ -51,10 +52,11 @@ object loanDecisionService {
       val record = new GenericData.Record(SCHEMA)
       record.put("requestId", element.requestId.orNull)
       record.put("applicationId", element.applicationId.orNull)
-      record.put("customerId", element.customerId.orNull)
-      record.put("prospectId", element.prospectId.orNull)
-      record.put("requestedAt", element.requestedAt.toEpochMilli)
+      record.put("customerId", element.customerId.getOrElse(0))
+      record.put("prospectId", element.prospectId.getOrElse(0))
+      record.put("requestedAt", element.requestedAt.getOrElse(0L))
       record.put("incomeSource", element.incomeSource)
+      record.put("isCustomer", element.isCustomer)
 
       writer.write(record, encoder)
       encoder.flush()
@@ -65,9 +67,9 @@ object loanDecisionService {
       // Return Kafka record with null key and Avro data as value
       new ProducerRecord[Array[Byte], Array[Byte]](
         "income_prediction_request",  // topic
-        avroBytes                     // key
+        null,                         // key
+        avroBytes                     // values
       )
-
     }
   }
 
@@ -81,7 +83,8 @@ object loanDecisionService {
       )
     )
     val eventsPerRequest: KeyedStream[incomePredictionRequest, String] =
-      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
+      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
+      //incomePredictionRequestEvents.keyBy(_.customerId)
 
     /** ****************************************************************************************************************************************************
      *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available

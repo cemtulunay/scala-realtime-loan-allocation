@@ -27,11 +27,12 @@ object loanDecisionService_20240331_1427_Avro {
       |  "namespace": "loan",
       |  "fields": [
       |    {"name": "requestId", "type": ["string"]},
-      |    {"name": "applicationId", "type": ["null", "string"], "default": null},
-      |    {"name": "customerId", "type": ["null", "string"], "default": null},
-      |    {"name": "prospectId", "type": ["null", "string"], "default": null},
-      |    {"name": "requestedAt", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
-      |    {"name": "incomeSource", "type": ["null","string"], "default": null}
+      |    {"name": "applicationId", "type": ["string"]},
+      |    {"name": "customerId", "type": ["int"]},
+      |    {"name": "prospectId", "type": ["int"]},
+      |    {"name": "requestedAt", "type": ["long"]},
+      |    {"name": "incomeSource", "type": ["null","string"], "default": null},
+      |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
       |  ]
       |}
     """.stripMargin
@@ -51,10 +52,11 @@ object loanDecisionService_20240331_1427_Avro {
       val record = new GenericData.Record(SCHEMA)
       record.put("requestId", element.requestId.orNull)
       record.put("applicationId", element.applicationId.orNull)
-      record.put("customerId", element.customerId.orNull)
-      record.put("prospectId", element.prospectId.orNull)
-      record.put("requestedAt", element.requestedAt)
+      record.put("customerId", element.customerId.getOrElse(0))
+      record.put("prospectId", element.prospectId.getOrElse(0))
+      record.put("requestedAt", element.requestedAt.getOrElse(0L))
       record.put("incomeSource", element.incomeSource)
+      record.put("isCustomer", element.isCustomer)
 
       writer.write(record, encoder)
       encoder.flush()
@@ -82,7 +84,7 @@ object loanDecisionService_20240331_1427_Avro {
       )
     )
     val eventsPerRequest: KeyedStream[incomePredictionRequest, String] =
-      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
+      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
 
     /** ****************************************************************************************************************************************************
      *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available

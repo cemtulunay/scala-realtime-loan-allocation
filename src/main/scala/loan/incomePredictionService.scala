@@ -1,41 +1,181 @@
 package loan
 
-import org.apache.flink.api.common.serialization.SimpleStringSchema
+import org.apache.avro.Schema
+import org.apache.avro.generic.{GenericData, GenericDatumReader, GenericRecord}
+import org.apache.avro.io.{DatumReader, DecoderFactory}
+import org.apache.flink.api.common.ExecutionConfig
+import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.java.typeutils.TypeExtractor
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, KafkaDeserializationSchema}
+import org.apache.kafka.clients.consumer.ConsumerRecord
+import com.esotericsoftware.kryo.Kryo
+import com.esotericsoftware.kryo.Serializer
+import com.esotericsoftware.kryo.io.Input
+import com.esotericsoftware.kryo.io.Output
+
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.util.Properties
 
 object incomePredictionService {
 
-  def incomePredictionRequestConsumer(): Unit = {
+  // Custom Kryo Serializer for GenericRecord
+  class GenericRecordKryoSerializer extends Serializer[GenericRecord] {
+    override def write(kryo: Kryo, output: Output, record: GenericRecord): Unit = {
+      // Serialize schema
+      val schemaString = record.getSchema.toString
+      output.writeString(schemaString)
 
+      // Serialize field count
+      val fields = record.getSchema.getFields
+      output.writeInt(fields.size)
+
+      // Serialize each field name and value
+      fields.forEach(field => {
+        val fieldName = field.name()
+        val value = record.get(fieldName)
+
+        output.writeString(fieldName)
+
+        // Handle potential null values
+        if (value == null) {
+          output.writeBoolean(false)
+        } else {
+          output.writeBoolean(true)
+          kryo.writeClassAndObject(output, value)
+        }
+      })
+    }
+
+    override def read(kryo: Kryo, input: Input, recordClass: Class[GenericRecord]): GenericRecord = {
+      // Read schema
+      val schemaString = input.readString()
+      val schema = new Schema.Parser().parse(schemaString)
+
+      // Create a new record
+      val record = new GenericData.Record(schema)
+
+      // Read field count
+      val fieldCount = input.readInt()
+
+      // Deserialize and set each field
+      (0 until fieldCount).foreach(_ => {
+        val fieldName = input.readString()
+
+        // Check if value is present
+        val hasValue = input.readBoolean()
+        if (hasValue) {
+          val value = kryo.readClassAndObject(input)
+          record.put(fieldName, value)
+        }
+      })
+
+      record
+    }
+  }
+
+  def incomePredictionRequestConsumer(): Unit = {
     // 1-) Setup Environment
     val env = StreamExecutionEnvironment.getExecutionEnvironment
 
-    // 2-) Instantiate Kafka Consumer
-    val kafkaProps = new Properties()
-    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")   // Kafka broker
-    kafkaProps.setProperty("group.id", "income_prediction_request_consumer")      // Consumer group
-
-    val kafkaConsumer = new FlinkKafkaConsumer[String](
-    "income_prediction_request",         // Kafka topic
-    new SimpleStringSchema(),            // Deserialize messages as String
-    kafkaProps
+    // Register custom Kryo serializer
+    env.getConfig.addDefaultKryoSerializer(
+      classOf[GenericRecord],
+      classOf[GenericRecordKryoSerializer]
     )
 
-    kafkaConsumer.setStartFromEarliest()  // Read from beginning if no checkpoint
+    // Ensure generic types are supported
+    //env.getConfig.setGenericTypes(true)
 
-    // 3-) Pass Kafka Event to Stream
-    val stream = env.addSource(kafkaConsumer)     // Add Kafka source to Flink
+    // 2-) Define Avro schema
+    val schemaString =
+      """
+        |{
+        |  "type": "record",
+        |  "name": "IncomePredictionRequest",
+        |  "namespace": "loan",
+        |  "fields": [
+        |    {"name": "requestId", "type": ["string"]},
+        |    {"name": "applicationId", "type": ["string"]},
+        |    {"name": "customerId", "type": ["int"]},
+        |    {"name": "prospectId", "type": ["int"]},
+        |    {"name": "requestedAt", "type": ["long"]},
+        |    {"name": "incomeSource", "type": ["null","string"], "default": null},
+        |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
+        |  ]
+        |}
+    """.stripMargin
+    val schema = new Schema.Parser().parse(schemaString)
 
-    stream                                        // Process the stream (e.g., parse JSON, filter, map, etc.)
-    .map(msg => s"Received income prediction Request: $msg")
-    .print()
+    // 3-) Configure Kafka properties
+    val kafkaProps = new Properties()
+    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
+    kafkaProps.setProperty("group.id", "income_prediction_request_consumer")
 
+    // 4-) Create custom Avro deserialization schema
+    val avroDeserializer = new KafkaDeserializationSchema[GenericRecord] {
+      override def isEndOfStream(nextElement: GenericRecord): Boolean = false
 
-    // Execute Flink job
-    env.execute("Kafka Flink Consumer")
+      override def deserialize(record: ConsumerRecord[Array[Byte], Array[Byte]]): GenericRecord = {
+        try {
+          val bytes = record.value()
 
+          val reader: DatumReader[GenericRecord] = new GenericDatumReader[GenericRecord](schema)
+          val decoder = DecoderFactory.get().binaryDecoder(new ByteArrayInputStream(bytes), null)
+
+          val genericRecord = reader.read(null, decoder)
+
+          if (genericRecord == null) {
+            throw new IllegalStateException("Deserialized record is null")
+          }
+
+          genericRecord
+        } catch {
+          case e: Exception =>
+            println(s"Deserialization error: ${e.getMessage}")
+            e.printStackTrace()
+            throw e
+        }
+      }
+
+      override def getProducedType(): TypeInformation[GenericRecord] =
+        TypeExtractor.getForClass(classOf[GenericRecord])
+    }
+
+    // 5-) Create Kafka consumer with Avro deserializer
+    val kafkaConsumer = new FlinkKafkaConsumer[GenericRecord](
+      "income_prediction_request",
+      avroDeserializer,
+      kafkaProps
+    )
+
+    kafkaConsumer.setStartFromEarliest()
+
+    // 6-) Add source to Flink environment and process
+    val stream = env.addSource(kafkaConsumer)
+
+    // 7-) Process the Avro records
+    stream.map(record => {
+        try {
+          val requestId = record.get("requestId").toString
+          val applicationId = record.get("applicationId").toString
+          val customerId = record.get("customerId").toString
+          val prospectId = record.get("prospectId").toString
+          val requestedAt = record.get("requestedAt").toString
+          val incomeSource = record.get("incomeSource").toString
+          val isCustomer = record.get("isCustomer").toString
+          s"requestId: $requestId, applicationId: $applicationId, customerId: $customerId, prospectId: $prospectId, requestedAt: $requestedAt, incomeSource: $incomeSource, isCustomer: $isCustomer"
+        } catch {
+          case e: Exception =>
+            println(s"Error processing record: ${e.getMessage}")
+            e.printStackTrace()
+            "Error"
+        }
+      })
+      .print()
+
+    // 8-) Execute Flink job
+    env.execute()
   }
 
   def main(args: Array[String]): Unit = {

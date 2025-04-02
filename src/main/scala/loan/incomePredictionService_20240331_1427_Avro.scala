@@ -55,11 +55,12 @@ object incomePredictionService_20240331_1427_Avro {
         |  "namespace": "loan",
         |  "fields": [
         |    {"name": "requestId", "type": ["string"]},
-        |    {"name": "applicationId", "type": ["null", "string"], "default": null},
-        |    {"name": "customerId", "type": ["null", "string"], "default": null},
-        |    {"name": "prospectId", "type": ["null", "string"], "default": null},
-        |    {"name": "requestedAt", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
-        |    {"name": "incomeSource", "type": ["null","string"], "default": null}
+        |    {"name": "applicationId", "type": ["string"]},
+        |    {"name": "customerId", "type": ["int"]},
+        |    {"name": "prospectId", "type": ["int"]},
+        |    {"name": "requestedAt", "type": ["long"]},
+        |    {"name": "incomeSource", "type": ["null","string"], "default": null},
+        |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
         |  ]
         |}
     """.stripMargin
@@ -90,16 +91,21 @@ object incomePredictionService_20240331_1427_Avro {
 
     // 7-) Process the Avro records
     stream.map(record => {
-        // Example of extracting fields from the GenericRecord
-        //val requestId = record.get("requestId").toString
-        //        val applicationId = record.get("applicationId").toString
-        val customerId = record.get("customerId").toString
-        //        val customerId = record.get("customerId").asInstanceOf[GenericRecord]
-        //        val prospectId = record.get("prospectId").asInstanceOf[GenericRecord]
-        //        val incomeSource = record.get("incomeSource").toString
-
-        // s"requestId: $requestId - applicationId: $applicationId - customerId:$customerId - prospectId:$prospectId - incomeSource:$incomeSource"
-        s"$customerId"
+        try {
+          val requestId = record.get("requestId").toString
+          val applicationId = record.get("applicationId").toString
+          val customerId = record.get("customerId").toString
+          val prospectId = record.get("prospectId").toString
+          val requestedAt = record.get("requestedAt").toString
+          val incomeSource = record.get("incomeSource").toString
+          val isCustomer = record.get("isCustomer").toString
+          s"requestId: $requestId, applicationId: $applicationId, customerId: $customerId, prospectId: $prospectId, requestedAt: $requestedAt, incomeSource: $incomeSource, isCustomer: $isCustomer"
+        } catch {
+          case e: Exception =>
+            println(s"Error processing record: ${e.getMessage}")
+            e.printStackTrace()
+            "Error"
+        }
       })
       .print()
 

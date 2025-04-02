@@ -23,10 +23,10 @@ object loanDecisionService_20240331_1730_Json {
   case class RequestData(
                           requestId: Option[String],
                           applicationId: Option[String],
-                          customerId: Option[String],
-                          prospectId: Option[String],
-                          requestedAt: Long,
-                          incomeSource: String,
+                          customerId: Option[Int],
+                          prospectId: Option[Int],
+                          requestedAt: Option[Long],
+                          incomeSource: String,          // "real-time" for prospects, "batch" for customers
                           isCustomer: Boolean,
                           eventCount: Long
                         )
@@ -40,7 +40,7 @@ object loanDecisionService_20240331_1730_Json {
         sleepMillisPerEvent = 100, // ~ 10 events/s
       )
     )
-    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse("0"))
+    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
 
     // 2-) Create Event Stream with JSON conversion
     val jsonStream = eventsPerRequest.process(
