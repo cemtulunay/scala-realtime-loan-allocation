@@ -13,8 +13,11 @@ import com.esotericsoftware.kryo.Kryo
 import com.esotericsoftware.kryo.Serializer
 import com.esotericsoftware.kryo.io.Input
 import com.esotericsoftware.kryo.io.Output
+import org.apache.flink.api.common.functions.MapFunction
+import org.apache.flink.connector.jdbc.{JdbcConnectionOptions, JdbcExecutionOptions, JdbcSink, JdbcStatementBuilder}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.sql.PreparedStatement
 import java.util.Properties
 
 object incomePredictionService {
@@ -77,6 +80,9 @@ object incomePredictionService {
   def incomePredictionRequestConsumer(): Unit = {
     // 1-) Setup Environment
     val env = StreamExecutionEnvironment.getExecutionEnvironment
+
+    // Enable checkpointing for reliability
+    env.enableCheckpointing(10000)
 
     // Register custom Kryo serializer
     env.getConfig.addDefaultKryoSerializer(
@@ -154,27 +160,97 @@ object incomePredictionService {
     // 6-) Add source to Flink environment and process
     val stream = env.addSource(kafkaConsumer)
 
-    // 7-) Process the Avro records
-    stream.map(record => {
+    // 7-) Define case class for postgreSql format
+    case class PredictionRecord(
+                                 requestId: String,
+                                 applicationId: String,
+                                 customerId: Int,
+                                 prospectId: Int,
+                                 requestedAt: Long,
+                                 incomeSource: String,
+                                 isCustomer: Boolean,
+                                 predictedIncome: Double
+                               ) extends Serializable
+
+
+    // 8-) Create a serializable function object for the mapping operation
+    class RecordMapper extends MapFunction[GenericRecord, PredictionRecord] with Serializable {
+      override def map(record: GenericRecord): PredictionRecord = {
         try {
-          val requestId = record.get("requestId").toString
-          val applicationId = record.get("applicationId").toString
-          val customerId = record.get("customerId").toString
-          val prospectId = record.get("prospectId").toString
-          val requestedAt = record.get("requestedAt").toString
-          val incomeSource = record.get("incomeSource").toString
-          val isCustomer = record.get("isCustomer").toString
-          s"requestId: $requestId, applicationId: $applicationId, customerId: $customerId, prospectId: $prospectId, requestedAt: $requestedAt, incomeSource: $incomeSource, isCustomer: $isCustomer"
+          val customerId = record.get("customerId").toString.toInt
+          PredictionRecord(
+            requestId = record.get("requestId").toString,
+            applicationId = record.get("applicationId").toString,
+            customerId = customerId,
+            prospectId = record.get("prospectId").toString.toInt,
+            requestedAt = record.get("requestedAt").toString.toLong,
+            incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
+            isCustomer = Option(record.get("isCustomer")).exists(_.toString.toBoolean),
+            predictedIncome = 50000.0 + (customerId % 10) * 5000.0
+          )
         } catch {
           case e: Exception =>
             println(s"Error processing record: ${e.getMessage}")
             e.printStackTrace()
-            "Error"
+            throw e
         }
-      })
-      .print()
+      }
+    }
 
-    // 8-) Execute Flink job
+
+    // 9-) Process the Avro records and make income predictions
+    val processedStream = stream.map(new RecordMapper())
+
+    // 10-) Create a serializable statement builder class
+    class PredictionRecordJdbcBuilder extends JdbcStatementBuilder[PredictionRecord] with Serializable {
+      override def accept(statement: PreparedStatement, record: PredictionRecord): Unit = {
+        statement.setString(1, record.requestId)
+        statement.setString(2, record.applicationId)
+        statement.setInt(3, record.customerId)
+        statement.setInt(4, record.prospectId)
+        statement.setLong(5, record.requestedAt)
+        statement.setString(6, record.incomeSource)
+        statement.setBoolean(7, record.isCustomer)
+        statement.setDouble(8, record.predictedIncome)
+      }
+    }
+
+    // 11-) Save to PostgreSQL Serialized Data
+    processedStream.addSink(
+      JdbcSink.sink[PredictionRecord](
+        // SQL statement
+        """
+        INSERT INTO income_predictions (
+          request_id, application_id, customer_id, prospect_id,
+          requested_at, income_source, is_customer, predicted_income,
+          processed_at, sent_to_npl
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, false)
+        ON CONFLICT (request_id)
+        DO UPDATE SET
+          predicted_income = EXCLUDED.predicted_income,
+          processed_at = CURRENT_TIMESTAMP,
+          sent_to_npl = false
+        """,
+        // Parameter setter
+        new PredictionRecordJdbcBuilder(),
+        // JDBC connection options
+        JdbcExecutionOptions.builder()
+          .withBatchSize(1000)
+          .withBatchIntervalMs(200)
+          .withMaxRetries(5)
+          .build(),
+        // JDBC connection options
+        new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+          .withUrl("jdbc:postgresql://localhost:5432/loan_db")
+          .withDriverName("org.postgresql.Driver")
+          .withUsername("docker")
+          .withPassword("docker")
+          .build()
+      )
+    )
+
+    processedStream.print()
+    // Execute job
     env.execute()
   }
 
