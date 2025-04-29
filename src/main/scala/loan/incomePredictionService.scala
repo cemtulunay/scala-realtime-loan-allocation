@@ -332,7 +332,7 @@ object incomePredictionService {
           }
 
           resultSet.close()
-          Thread.sleep(100)  // Poll every 1 second
+          Thread.sleep(100)  // Poll every 0.1 second
         }
       } catch {
         case e: Exception =>
