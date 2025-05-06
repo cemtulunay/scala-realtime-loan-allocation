@@ -1,6 +1,7 @@
 package loan
 
 import generators.{incomePredictionRequest, incomePredictionRequestGenerator}
+import loan.incomePredictionService.GenericRecordKryoSerializer
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
 import org.apache.avro.io.EncoderFactory
@@ -8,7 +9,7 @@ import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaSerializationSchema}
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaDeserializationSchema, KafkaSerializationSchema}
 import org.apache.flink.util.Collector
 import org.apache.kafka.clients.producer.ProducerRecord
 
