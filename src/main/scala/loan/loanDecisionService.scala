@@ -12,15 +12,45 @@ import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaDeserializationSchema, KafkaSerializationSchema}
 import org.apache.flink.util.Collector
 import org.apache.kafka.clients.producer.ProducerRecord
-
 import java.io.ByteArrayOutputStream
 import java.util.Properties
 
 
 object loanDecisionService {
 
+  class GenericAvroSerializer[T](
+                                  schemaString: String,  // Pass schema as string instead of Schema object
+                                  topic: String,
+                                  toGenericRecord: (T, GenericRecord) => Unit
+                                ) extends KafkaSerializationSchema[T] with Serializable {
+
+    @transient private lazy val schema: Schema = new Schema.Parser().parse(schemaString)
+
+    override def serialize(element: T, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
+      val byteArrayOutputStream = new ByteArrayOutputStream()
+      val encoder = EncoderFactory.get().blockingBinaryEncoder(byteArrayOutputStream, null)
+      val writer = new GenericDatumWriter[GenericRecord](schema)
+
+      val record = new GenericData.Record(schema)
+      toGenericRecord(element, record)
+
+      writer.write(record, encoder)
+      encoder.flush()
+
+      val avroBytes = byteArrayOutputStream.toByteArray
+      byteArrayOutputStream.close()
+
+      new ProducerRecord[Array[Byte], Array[Byte]](
+        topic,
+        null,
+        avroBytes
+      )
+    }
+  }
+
+
   // Create Avro schema for incomePredictionRequest
-  val SCHEMA_STRING =
+  val SCHEMA_STRING_INCOME_PREDICTION =
     """
       |{
       |  "type": "record",
@@ -38,42 +68,6 @@ object loanDecisionService {
       |}
     """.stripMargin
 
-  val SCHEMA = new Schema.Parser().parse(SCHEMA_STRING)
-
-  // Custom Kafka serialization schema for Avro
-  class AvroKafkaSerializationSchema extends KafkaSerializationSchema[incomePredictionRequest] {
-    override def serialize(element: incomePredictionRequest, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
-      val byteArrayOutputStream = new ByteArrayOutputStream()
-      val encoder = EncoderFactory.get().blockingBinaryEncoder(byteArrayOutputStream, null)
-
-      // Since incomePredictionRequest is not an Avro SpecificRecord, we use GenericDatumWriter
-      val writer = new GenericDatumWriter[GenericRecord](SCHEMA)
-
-      // Convert our case class to a GenericRecord
-      val record = new GenericData.Record(SCHEMA)
-      record.put("requestId", element.requestId.orNull)
-      record.put("applicationId", element.applicationId.orNull)
-      record.put("customerId", element.customerId.getOrElse(0))
-      record.put("prospectId", element.prospectId.getOrElse(0))
-      record.put("requestedAt", element.requestedAt.getOrElse(0L))
-      record.put("incomeSource", element.incomeSource)
-      record.put("isCustomer", element.isCustomer)
-
-      writer.write(record, encoder)
-      encoder.flush()
-
-      val avroBytes = byteArrayOutputStream.toByteArray
-      byteArrayOutputStream.close()
-
-      // Return Kafka record with null key and Avro data as value
-      new ProducerRecord[Array[Byte], Array[Byte]](
-        "income_prediction_request",  // topic
-        null,                         // key
-        avroBytes                     // values
-      )
-    }
-  }
-
   def incomePredictionRequestProducer(): Unit = {
 
     // 1-) Setup Environment and add Data generator as a Source
@@ -85,7 +79,6 @@ object loanDecisionService {
     )
     val eventsPerRequest: KeyedStream[incomePredictionRequest, String] =
       incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
-      //incomePredictionRequestEvents.keyBy(_.customerId)
 
     /** ****************************************************************************************************************************************************
      *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
@@ -122,6 +115,20 @@ object loanDecisionService {
       }
     )
 
+    // Use the schema string instead of Schema object
+    val incomePredictionSerializer = new GenericAvroSerializer[incomePredictionRequest](
+      schemaString = SCHEMA_STRING_INCOME_PREDICTION,  // Use the schema string constant
+      topic = "income_prediction_request",
+      toGenericRecord = (element, record) => {
+        record.put("requestId", element.requestId.orNull)
+        record.put("applicationId", element.applicationId.orNull)
+        record.put("customerId", element.customerId.getOrElse(0))
+        record.put("prospectId", element.prospectId.getOrElse(0))
+        record.put("requestedAt", element.requestedAt.getOrElse(0L))
+        record.put("incomeSource", element.incomeSource)
+        record.put("isCustomer", element.isCustomer)
+      }
+    )
 
     // 3-) Instantiate Kafka Producer with Avro serialization
     val kafkaProps = new Properties()
@@ -130,7 +137,7 @@ object loanDecisionService {
 
     val kafkaProducer = new FlinkKafkaProducer[incomePredictionRequest](
       "income_prediction_request",        // default topic
-      new AvroKafkaSerializationSchema(), // serialize as Avro
+      incomePredictionSerializer,         // serialize as Avro
       kafkaProps,
       FlinkKafkaProducer.Semantic.EXACTLY_ONCE
     )
