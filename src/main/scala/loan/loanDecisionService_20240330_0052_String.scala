@@ -1,6 +1,6 @@
 package loan
 
-import generators.{incomePredictionRequest, incomePredictionRequestGenerator}
+import generators.{predictionRequest, predictionRequestGenerator}
 import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.configuration.Configuration
@@ -18,11 +18,11 @@ object loanDecisionService_20240330_0052_String {
     // 1-) Setup Environment and add Data generator as a Source
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     val incomePredictionRequestEvents = env.addSource(
-      new incomePredictionRequestGenerator(
+      new predictionRequestGenerator(
         sleepMillisPerEvent = 100, // ~ 10 events/s
       )
     )
-    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
+    val eventsPerRequest: KeyedStream[predictionRequest, String] = incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
 
     /** ****************************************************************************************************************************************************
      *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
@@ -30,7 +30,7 @@ object loanDecisionService_20240330_0052_String {
 
     // 2-) Create Event Stream
     val numEventsPerRequestStream = eventsPerRequest.process(
-      new KeyedProcessFunction[String, incomePredictionRequest, String] {
+      new KeyedProcessFunction[String, predictionRequest, String] {
 
         var stateCounter: ValueState[Long] = _
 
@@ -41,8 +41,8 @@ object loanDecisionService_20240330_0052_String {
         }
 
         override def processElement(
-                                     value: incomePredictionRequest,
-                                     ctx: KeyedProcessFunction[String, incomePredictionRequest, String]#Context,
+                                     value: predictionRequest,
+                                     ctx: KeyedProcessFunction[String, predictionRequest, String]#Context,
                                      out: Collector[String]
                                    ): Unit = {
 

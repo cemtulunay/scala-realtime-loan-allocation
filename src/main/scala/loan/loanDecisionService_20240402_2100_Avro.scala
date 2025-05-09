@@ -1,6 +1,6 @@
 package loan
 
-import generators.{incomePredictionRequest, incomePredictionRequestGenerator}
+import generators.{predictionRequest, predictionRequestGenerator}
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
 import org.apache.avro.io.EncoderFactory
@@ -40,8 +40,8 @@ object loanDecisionService_20240402_2100_Avro {
   val SCHEMA = new Schema.Parser().parse(SCHEMA_STRING)
 
   // Custom Kafka serialization schema for Avro
-  class AvroKafkaSerializationSchema extends KafkaSerializationSchema[incomePredictionRequest] {
-    override def serialize(element: incomePredictionRequest, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
+  class AvroKafkaSerializationSchema extends KafkaSerializationSchema[predictionRequest] {
+    override def serialize(element: predictionRequest, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
       val byteArrayOutputStream = new ByteArrayOutputStream()
       val encoder = EncoderFactory.get().blockingBinaryEncoder(byteArrayOutputStream, null)
 
@@ -78,11 +78,11 @@ object loanDecisionService_20240402_2100_Avro {
     // 1-) Setup Environment and add Data generator as a Source
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     val incomePredictionRequestEvents = env.addSource(
-      new incomePredictionRequestGenerator(
+      new predictionRequestGenerator(
         sleepMillisPerEvent = 100, // ~ 10 events/s
       )
     )
-    val eventsPerRequest: KeyedStream[incomePredictionRequest, String] =
+    val eventsPerRequest: KeyedStream[predictionRequest, String] =
       incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
       //incomePredictionRequestEvents.keyBy(_.customerId)
 
@@ -92,7 +92,7 @@ object loanDecisionService_20240402_2100_Avro {
 
     // 2-) Create Event Stream
     val processedRequests = eventsPerRequest.process(
-      new KeyedProcessFunction[String, incomePredictionRequest, incomePredictionRequest] {
+      new KeyedProcessFunction[String, predictionRequest, predictionRequest] {
 
         var stateCounter: ValueState[Long] = _
 
@@ -103,9 +103,9 @@ object loanDecisionService_20240402_2100_Avro {
         }
 
         override def processElement(
-                                     value: incomePredictionRequest,
-                                     ctx: KeyedProcessFunction[String, incomePredictionRequest, incomePredictionRequest]#Context,
-                                     out: Collector[incomePredictionRequest]
+                                     value: predictionRequest,
+                                     ctx: KeyedProcessFunction[String, predictionRequest, predictionRequest]#Context,
+                                     out: Collector[predictionRequest]
                                    ): Unit = {
           val currentState = Option(stateCounter.value()).getOrElse(0L) // If state is null, use 0L
 
@@ -127,7 +127,7 @@ object loanDecisionService_20240402_2100_Avro {
     kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
     kafkaProps.setProperty("transaction.timeout.ms", "5000")
 
-    val kafkaProducer = new FlinkKafkaProducer[incomePredictionRequest](
+    val kafkaProducer = new FlinkKafkaProducer[predictionRequest](
       "income_prediction_request",        // default topic
       new AvroKafkaSerializationSchema(), // serialize as Avro
       kafkaProps,

@@ -9,26 +9,27 @@ import scala.annotation.tailrec
 import scala.util.Random
 
 
-case class incomePredictionRequest(
+case class predictionRequest(
                                     requestId: Option[String],
                                     applicationId: Option[String],
                                     customerId: Option[Int],
                                     prospectId: Option[Int],
                                     requestedAt: Option[Long],
                                     incomeSource: String,          // "real-time" for prospects, "batch" for customers
-                                    isCustomer: Boolean
+                                    isCustomer: Boolean,
+                                    predictedIncome: Option[Double]
                                   )
 
-class incomePredictionRequestGenerator(
+class predictionRequestGenerator(
                                         sleepMillisPerEvent: Int,
                                         baseInstant: Instant = Instant.now(),
                                         extraDelayInMillisOnEveryTenEvents: Option[Long] = None
-                                      ) extends RichParallelSourceFunction[incomePredictionRequest] {
+                                      ) extends RichParallelSourceFunction[predictionRequest] {
 
   @volatile private var running = true
 
   @tailrec
-  private def run(id: Long, ctx: SourceFunction.SourceContext[incomePredictionRequest]): Unit = {
+  private def run(id: Long, ctx: SourceFunction.SourceContext[predictionRequest]): Unit = {
     if (running) {
       val event = generateEvent(id)
       ctx.collect(event)
@@ -39,21 +40,24 @@ class incomePredictionRequestGenerator(
     }
   }
 
-  private def generateEvent(id: Long): incomePredictionRequest = {
+  private def generateEvent(id: Long): predictionRequest = {
     val isCustomer = Random.nextDouble() < 0.8 // 80% chance of being a customer
+    val customerId = if (isCustomer) Some(Random.nextInt(999999) + 1000000) else Some(0)
+    val oneDayAgo = System.currentTimeMillis() - (24 * 60 * 60 * 1000) // 24 hours ago in milliseconds - This will immitate the batch operation time
 
-    incomePredictionRequest(
+    predictionRequest(
       requestId = Some(UUID.randomUUID().toString),
       applicationId = Some(UUID.randomUUID().toString),
-      customerId = if (isCustomer) Some(Random.nextInt(999999) + 1000000) else Some(0),
+      customerId = customerId,
       prospectId = if (!isCustomer) Some(Random.nextInt(999999) + 2000000) else Some(0),
-      requestedAt = Some(baseInstant.plusSeconds(id).toEpochMilli),
-      incomeSource = if (isCustomer) "real-time" else "batch",
-      isCustomer
+      requestedAt = if (!isCustomer) Some(baseInstant.plusSeconds(id).toEpochMilli) else Some(oneDayAgo),
+      incomeSource = if (!isCustomer) "real-time" else "batch",
+      isCustomer,
+      predictedIncome = if (isCustomer) Some(50000.0 + (customerId.getOrElse(0) % 10) * 5000.0) else Some(0)
     )
   }
 
-  override def run(ctx: SourceFunction.SourceContext[incomePredictionRequest]): Unit = run(1, ctx)
+  override def run(ctx: SourceFunction.SourceContext[predictionRequest]): Unit = run(1, ctx)
 
   override def cancel(): Unit = {
     running = false
