@@ -52,6 +52,85 @@ object loanDecisionService {
     }
   }
 
+  abstract class StreamProducer(sleepMillisPerEvent: Int = 100,
+                                kafkaBootstrapServers: String = "localhost:9092",
+                                kafkaTransactionTimeout: Int = 5000,
+                                keySelector: predictionRequest => String = _.customerId.getOrElse(0).toString,
+                                flinkSemantic: FlinkKafkaProducer.Semantic = FlinkKafkaProducer.Semantic.EXACTLY_ONCE
+                               ) extends Serializable {
+    // Abstract members
+    protected def schemaString: String
+    protected def topicName: String
+    protected def printEnabled: Boolean = false
+    protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit
+
+    // Create components in produce() method instead of class level
+    def produce(): Unit = {
+      // 1-) Setup Environment and add Data generator as a Source
+      val env = StreamExecutionEnvironment.getExecutionEnvironment
+      val sourceGenerator = new predictionRequestGenerator(sleepMillisPerEvent)
+
+      val kafkaProps = new Properties()
+      kafkaProps.setProperty("bootstrap.servers", kafkaBootstrapServers)
+      kafkaProps.setProperty("transaction.timeout.ms", kafkaTransactionTimeout.toString)
+
+      val serializer = createSerializer()
+
+      val sourceEvents = env.addSource(sourceGenerator)
+      val eventsPerRequest = sourceEvents.keyBy(keySelector)
+
+      // 2-) Create Event Stream
+      /** ****************************************************************************************************************************************************
+       *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available - Not Necessary, used for showcasing
+       * **************************************************************************************************************************************************** */
+      val processedRequests = eventsPerRequest.process(
+        new KeyedProcessFunction[String, predictionRequest, predictionRequest] {
+          @transient private var stateCounter: ValueState[Long] = _
+
+          override def open(parameters: Configuration): Unit = {
+            val descriptor = new ValueStateDescriptor[Long]("events-counter", classOf[Long])
+            stateCounter = getRuntimeContext.getState(descriptor)
+          }
+
+          override def processElement(
+                                       value: predictionRequest,
+                                       ctx: KeyedProcessFunction[String, predictionRequest, predictionRequest]#Context,
+                                       out: Collector[predictionRequest]
+                                     ): Unit = {
+            val currentState = Option(stateCounter.value()).getOrElse(0L)
+            stateCounter.update(currentState + 1)
+            out.collect(value)
+          }
+        }
+      )
+
+      // 3-) Instantiate Kafka Producer with Avro serialization
+      val kafkaProducer = new FlinkKafkaProducer[predictionRequest](
+        topicName,
+        serializer,
+        kafkaProps,
+        flinkSemantic
+      )
+
+      // 4-) Pass Stream to Kafka Producer and print to console if required
+      if (printEnabled) {
+        processedRequests.print()
+      }
+      processedRequests.addSink(kafkaProducer)
+
+      env.execute(s"Stream Producer for $topicName")
+    }
+
+    private def createSerializer(): GenericAvroSerializer[predictionRequest] = {
+      new GenericAvroSerializer[predictionRequest](
+        schemaString = schemaString,
+        topic = topicName,
+        toGenericRecord = toGenericRecord
+      )
+    }
+  }
+
+
 
   // Create Avro schema for incomePredictionRequest
   val SCHEMA_STRING_INCOME_PREDICTION =
@@ -72,83 +151,22 @@ object loanDecisionService {
       |}
     """.stripMargin
 
-  def incomePredictionRequestProducer(): Unit = {
 
-    // 1-) Setup Environment and add Data generator as a Source
-    val env = StreamExecutionEnvironment.getExecutionEnvironment
-    val incomePredictionRequestEvents = env.addSource(
-      new predictionRequestGenerator(
-        sleepMillisPerEvent = 100, // ~ 10 events/s
-      )
-    )
-    val eventsPerRequest: KeyedStream[predictionRequest, String] =
-      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
+  // Implementation for Income Prediction Producer
+  class IncomePredictionProducer extends StreamProducer with Serializable {
+    override protected def schemaString: String = SCHEMA_STRING_INCOME_PREDICTION
+    override protected def topicName: String = "income_prediction_request"
+    override protected def printEnabled: Boolean = false
 
-    /** ****************************************************************************************************************************************************
-     *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
-     * **************************************************************************************************************************************************** */
-
-    // 2-) Create Event Stream
-    val processedRequests = eventsPerRequest.process(
-      new KeyedProcessFunction[String, predictionRequest, predictionRequest] {
-
-        var stateCounter: ValueState[Long] = _
-
-        override def open(parameters: Configuration): Unit = {
-          // initialize all state
-          val descriptor = new ValueStateDescriptor[Long]("events-counter", classOf[Long])
-          stateCounter = getRuntimeContext.getState(descriptor)
-        }
-
-        override def processElement(
-                                     value: predictionRequest,
-                                     ctx: KeyedProcessFunction[String, predictionRequest, predictionRequest]#Context,
-                                     out: Collector[predictionRequest]
-                                   ): Unit = {
-          val currentState = Option(stateCounter.value()).getOrElse(0L) // If state is null, use 0L
-
-          // Update state with the new count
-          stateCounter.update(currentState + 1)
-
-          // For debugging, print to stdout
-          //println(s"request ${value.requestId.getOrElse("unknown")} - ${currentState + 1} - customer ${value.customerId.getOrElse("0")}")
-
-          // Forward the original request to Kafka
-          out.collect(value)
-        }
-      }
-    )
-
-    // Use the schema string instead of Schema object
-    val incomePredictionSerializer = new GenericAvroSerializer[predictionRequest](
-      schemaString = SCHEMA_STRING_INCOME_PREDICTION,  // Use the schema string constant
-      topic = "income_prediction_request",
-      toGenericRecord = (element, record) => {
-        record.put("requestId", element.requestId.orNull)
-        record.put("applicationId", element.applicationId.orNull)
-        record.put("customerId", element.customerId.getOrElse(0))
-        record.put("prospectId", element.prospectId.getOrElse(0))
-        record.put("requestedAt", element.requestedAt.getOrElse(0L))
-        record.put("incomeSource", element.incomeSource)
-        record.put("isCustomer", element.isCustomer)
-      }
-    )
-
-    // 3-) Instantiate Kafka Producer with Avro serialization
-    val kafkaProps = new Properties()
-    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
-    kafkaProps.setProperty("transaction.timeout.ms", "5000")
-
-    val kafkaProducer = new FlinkKafkaProducer[predictionRequest](
-      "income_prediction_request",        // default topic
-      incomePredictionSerializer,         // serialize as Avro
-      kafkaProps,
-      FlinkKafkaProducer.Semantic.EXACTLY_ONCE
-    )
-
-    // 4-) Pass Stream to Kafka Producer
-    processedRequests.addSink(kafkaProducer)
-    env.execute()
+    override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
+      record.put("requestId", element.requestId.orNull)
+      record.put("applicationId", element.applicationId.orNull)
+      record.put("customerId", element.customerId.getOrElse(0))
+      record.put("prospectId", element.prospectId.getOrElse(0))
+      record.put("requestedAt", element.requestedAt.getOrElse(0L))
+      record.put("incomeSource", element.incomeSource)
+      record.put("isCustomer", element.isCustomer)
+    }
   }
 
   val SCHEMA_STRING_NPL_PREDICTION =
@@ -170,108 +188,44 @@ object loanDecisionService {
       |}
     """.stripMargin
 
-  def nplRequestProducer(): Unit = {
+  // Implementation for NPL Producer
+  class NplPredictionProducer extends StreamProducer with Serializable {
+    override protected def schemaString: String = SCHEMA_STRING_NPL_PREDICTION
+    override protected def topicName: String = "npl_prediction_request"
+    override protected def printEnabled: Boolean = true
 
-    // 1-) Setup Environment and add Data generator as a Source
-    val env = StreamExecutionEnvironment.getExecutionEnvironment
-    val incomePredictionRequestEvents = env.addSource(
-      new predictionRequestGenerator(
-        sleepMillisPerEvent = 100, // ~ 10 events/s
-      )
-    )
-    val eventsPerRequest: KeyedStream[predictionRequest, String] =
-      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
-
-    /** ****************************************************************************************************************************************************
-     *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
-     * **************************************************************************************************************************************************** */
-
-    // 2-) Create Event Stream
-    val processedRequests = eventsPerRequest.process(
-      new KeyedProcessFunction[String, predictionRequest, predictionRequest] {
-
-        var stateCounter: ValueState[Long] = _
-
-        override def open(parameters: Configuration): Unit = {
-          // initialize all state
-          val descriptor = new ValueStateDescriptor[Long]("events-counter", classOf[Long])
-          stateCounter = getRuntimeContext.getState(descriptor)
-        }
-
-        override def processElement(
-                                     value: predictionRequest,
-                                     ctx: KeyedProcessFunction[String, predictionRequest, predictionRequest]#Context,
-                                     out: Collector[predictionRequest]
-                                   ): Unit = {
-          val currentState = Option(stateCounter.value()).getOrElse(0L) // If state is null, use 0L
-
-          // Update state with the new count
-          stateCounter.update(currentState + 1)
-
-          // For debugging, print to stdout
-          //println(s"request ${value.requestId.getOrElse("unknown")} - ${currentState + 1} - customer ${value.customerId.getOrElse("0")}")
-
-          // Forward the original request to Kafka
-          out.collect(value)
-        }
-      }
-    )
-
-    // Use the schema string instead of Schema object
-    val nplPredictionSerializer = new GenericAvroSerializer[predictionRequest](
-      schemaString = SCHEMA_STRING_NPL_PREDICTION,  // Use the schema string constant
-      topic = "npl_prediction_request",
-      toGenericRecord = (element, record) => {
-        record.put("requestId", element.requestId.orNull)
-        record.put("applicationId", element.applicationId.orNull)
-        record.put("customerId", element.customerId.getOrElse(0))
-        record.put("prospectId", element.prospectId.getOrElse(0))
-        record.put("requestedAt", element.requestedAt.getOrElse(0L))
-        record.put("incomeSource", element.incomeSource)
-        record.put("isCustomer", element.isCustomer)
-        record.put("predictedIncome", element.predictedIncome.getOrElse(0))
-      }
-    )
-
-    // 3-) Instantiate Kafka Producer with Avro serialization
-    val kafkaProps = new Properties()
-    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
-    kafkaProps.setProperty("transaction.timeout.ms", "5000")
-
-    val kafkaProducer = new FlinkKafkaProducer[predictionRequest](
-      "npl_prediction_request",        // default topic
-      nplPredictionSerializer,         // serialize as Avro
-      kafkaProps,
-      FlinkKafkaProducer.Semantic.EXACTLY_ONCE
-    )
-
-    // 4-) Pass Stream to Kafka Producer
-    processedRequests.print()
-    processedRequests.addSink(kafkaProducer)
-    env.execute()
+    override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
+      record.put("requestId", element.requestId.orNull)
+      record.put("applicationId", element.applicationId.orNull)
+      record.put("customerId", element.customerId.getOrElse(0))
+      record.put("prospectId", element.prospectId.getOrElse(0))
+      record.put("requestedAt", element.requestedAt.getOrElse(0L))
+      record.put("incomeSource", element.incomeSource)
+      record.put("isCustomer", element.isCustomer)
+      record.put("predictedIncome", element.predictedIncome.getOrElse(0))
+    }
   }
 
+  // main method runs the producers and consumers in parallel
   def main(args: Array[String]): Unit = {
-    // Create futures for both processes
+    // Create futures for both producers
     val producer1Future = Future {
-      nplRequestProducer()
+      new NplPredictionProducer().produce()
     }
 
     val producer2Future = Future {
-      incomePredictionRequestProducer()
+      new IncomePredictionProducer().produce()
     }
 
     // Combine futures and wait for both to complete
     val combinedFuture = Future.sequence(Seq(producer1Future, producer2Future))
 
     try {
-      // Wait indefinitely for both processes
       Await.result(combinedFuture, Duration.Inf)
     } catch {
       case e: Exception =>
         println(s"Error in one of the processes: ${e.getMessage}")
         e.printStackTrace()
-        // You might want to gracefully shutdown both processes here
         System.exit(1)
     }
   }

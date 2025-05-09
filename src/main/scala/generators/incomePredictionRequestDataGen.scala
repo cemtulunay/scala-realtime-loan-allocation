@@ -53,7 +53,7 @@ class predictionRequestGenerator(
       requestedAt = if (!isCustomer) Some(baseInstant.plusSeconds(id).toEpochMilli) else Some(oneDayAgo),
       incomeSource = if (!isCustomer) "real-time" else "batch",
       isCustomer,
-      predictedIncome = if (isCustomer) Some(50000.0 + (customerId.getOrElse(0) % 10) * 5000.0) else Some(0)
+      predictedIncome = if (!isCustomer) Some(0) else Some(50000.0 + (customerId.getOrElse(0) % 10) * 5000.0)
     )
   }
 
