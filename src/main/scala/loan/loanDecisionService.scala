@@ -1,7 +1,6 @@
 package loan
 
 import generators.{predictionRequest, predictionRequestGenerator}
-import loan.incomePredictionService.GenericRecordKryoSerializer
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
 import org.apache.avro.io.EncoderFactory
@@ -9,6 +8,7 @@ import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
+import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaSerializationSchema}
 import org.apache.flink.util.Collector
@@ -20,13 +20,11 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.Duration
 
-
 object loanDecisionService {
 
-  implicit val predictionRequestTypeInfo: TypeInformation[predictionRequest] = TypeInformation.of(classOf[predictionRequest])
-
+  // Generic Avro serializer
   class GenericAvroSerializer[T](
-                                  schemaString: String,  // Pass schema as string instead of Schema object
+                                  schemaString: String,
                                   topic: String,
                                   toGenericRecord: (T, GenericRecord) => Unit
                                 ) extends KafkaSerializationSchema[T] with Serializable {
@@ -55,25 +53,28 @@ object loanDecisionService {
     }
   }
 
-  abstract class StreamProducer[T](sleepMillisPerEvent: Int = 100,
-                                   kafkaBootstrapServers: String = "localhost:9092",
-                                   kafkaTransactionTimeout: Int = 5000,
-                                   keySelector: T => String,
-                                   flinkSemantic: FlinkKafkaProducer.Semantic = FlinkKafkaProducer.Semantic.EXACTLY_ONCE
-                                  )(implicit typeInfo: TypeInformation[T]) extends Serializable {
+  // Fully generalized StreamProducer
+  abstract class StreamProducer[S, T](
+                                       protected val sleepMillisPerEvent: Int = 100,
+                                       kafkaBootstrapServers: String = "localhost:9092",
+                                       kafkaTransactionTimeout: Int = 5000,
+                                       keySelector: T => String,
+                                       flinkSemantic: FlinkKafkaProducer.Semantic = FlinkKafkaProducer.Semantic.EXACTLY_ONCE
+                                     )(implicit typeInfoS: TypeInformation[S], typeInfoT: TypeInformation[T]) extends Serializable {
 
     // Abstract members
     protected def schemaString: String
     protected def topicName: String
     protected def printEnabled: Boolean = false
     protected def toGenericRecord(element: T, record: GenericRecord): Unit
-    protected def convertToT(request: predictionRequest): T
+    protected def convertSourceToTarget(source: S): T
+    protected def createSourceGenerator(): SourceFunction[S]
 
-    // Create components in produce() method instead of class level
+    // Create components in produce() method
     def produce(): Unit = {
       // 1-) Setup Environment and add Data generator as a Source
       val env = StreamExecutionEnvironment.getExecutionEnvironment
-      val sourceGenerator = new predictionRequestGenerator(sleepMillisPerEvent)
+      val sourceGenerator = createSourceGenerator()
 
       val kafkaProps = new Properties()
       kafkaProps.setProperty("bootstrap.servers", kafkaBootstrapServers)
@@ -81,10 +82,13 @@ object loanDecisionService {
 
       val serializer = createSerializer()
 
-      val sourceEvents: DataStream[T] = env.addSource(sourceGenerator).map(x => convertToT(x))
+      // Convert from source type S to target type T
+      val sourceEvents: DataStream[T] = env.addSource(sourceGenerator)
+        .map(x => convertSourceToTarget(x))
+
       val eventsPerRequest = sourceEvents.keyBy(keySelector)
 
-      // 2-) Create Event Stream
+      // 2-) Create Event Stream with stateful processing
       /** ****************************************************************************************************************************************************
        *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available - Not Necessary, used for showcasing
        * **************************************************************************************************************************************************** */
@@ -135,9 +139,7 @@ object loanDecisionService {
     }
   }
 
-
-
-  // Create Avro schema for incomePredictionRequest
+  // Avro schemas
   val SCHEMA_STRING_INCOME_PREDICTION =
     """
       |{
@@ -155,27 +157,6 @@ object loanDecisionService {
       |  ]
       |}
     """.stripMargin
-
-
-  // Implementation for Income Prediction Producer
-  class IncomePredictionProducer extends StreamProducer[predictionRequest](
-    keySelector = _.customerId.getOrElse(0).toString
-  )(implicitly[TypeInformation[predictionRequest]]) {
-    override protected def schemaString: String = SCHEMA_STRING_INCOME_PREDICTION
-    override protected def topicName: String = "income_prediction_request"
-    override protected def printEnabled: Boolean = false
-    override protected def convertToT(request: predictionRequest): predictionRequest = request
-
-    override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
-      record.put("requestId", element.requestId.orNull)
-      record.put("applicationId", element.applicationId.orNull)
-      record.put("customerId", element.customerId.getOrElse(0))
-      record.put("prospectId", element.prospectId.getOrElse(0))
-      record.put("requestedAt", element.requestedAt.getOrElse(0L))
-      record.put("incomeSource", element.incomeSource)
-      record.put("isCustomer", element.isCustomer)
-    }
-  }
 
   val SCHEMA_STRING_NPL_PREDICTION =
     """
@@ -196,14 +177,38 @@ object loanDecisionService {
       |}
     """.stripMargin
 
-  // Implementation for NPL Producer
-  class NplPredictionProducer extends StreamProducer[predictionRequest](
+  // Implementation for Income Prediction Producer
+  class IncomePredictionProducer extends StreamProducer[predictionRequest, predictionRequest](
     keySelector = _.customerId.getOrElse(0).toString
-  ) (implicitly[TypeInformation[predictionRequest]]) {
+  )(implicitly[TypeInformation[predictionRequest]], implicitly[TypeInformation[predictionRequest]]) {
+    override protected def schemaString: String = SCHEMA_STRING_INCOME_PREDICTION
+    override protected def topicName: String = "income_prediction_request"
+    override protected def printEnabled: Boolean = false
+    override protected def convertSourceToTarget(source: predictionRequest): predictionRequest = source
+    override protected def createSourceGenerator(): SourceFunction[predictionRequest] =
+      new predictionRequestGenerator(sleepMillisPerEvent)
+
+    override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
+      record.put("requestId", element.requestId.orNull)
+      record.put("applicationId", element.applicationId.orNull)
+      record.put("customerId", element.customerId.getOrElse(0))
+      record.put("prospectId", element.prospectId.getOrElse(0))
+      record.put("requestedAt", element.requestedAt.getOrElse(0L))
+      record.put("incomeSource", element.incomeSource)
+      record.put("isCustomer", element.isCustomer)
+    }
+  }
+
+  // Implementation for NPL Producer
+  class NplPredictionProducer extends StreamProducer[predictionRequest, predictionRequest](
+    keySelector = _.customerId.getOrElse(0).toString
+  )(implicitly[TypeInformation[predictionRequest]], implicitly[TypeInformation[predictionRequest]]) {
     override protected def schemaString: String = SCHEMA_STRING_NPL_PREDICTION
     override protected def topicName: String = "npl_prediction_request"
     override protected def printEnabled: Boolean = true
-    override protected def convertToT(request: predictionRequest): predictionRequest = request
+    override protected def convertSourceToTarget(source: predictionRequest): predictionRequest = source
+    override protected def createSourceGenerator(): SourceFunction[predictionRequest] =
+      new predictionRequestGenerator(sleepMillisPerEvent)
 
     override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
       record.put("requestId", element.requestId.orNull)
@@ -217,18 +222,18 @@ object loanDecisionService {
     }
   }
 
-  // main method runs the producers and consumers in parallel
+  // main method runs the producers in parallel
   def main(args: Array[String]): Unit = {
-    // Create futures for both producers
+    // Create futures for producers
     val producer1Future = Future {
-      new NplPredictionProducer().produce()
-    }
-
-    val producer2Future = Future {
       new IncomePredictionProducer().produce()
     }
 
-    // Combine futures and wait for both to complete
+    val producer2Future = Future {
+      new NplPredictionProducer().produce()
+    }
+
+    // Run two basic producers
     val combinedFuture = Future.sequence(Seq(producer1Future, producer2Future))
 
     try {
@@ -240,5 +245,4 @@ object loanDecisionService {
         System.exit(1)
     }
   }
-
 }
