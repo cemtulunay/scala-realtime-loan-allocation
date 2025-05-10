@@ -6,10 +6,11 @@ import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericData, GenericDatumWriter, GenericRecord}
 import org.apache.avro.io.EncoderFactory
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaDeserializationSchema, KafkaSerializationSchema}
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaProducer, KafkaSerializationSchema}
 import org.apache.flink.util.Collector
 import org.apache.kafka.clients.producer.ProducerRecord
 
@@ -21,6 +22,8 @@ import scala.concurrent.duration.Duration
 
 
 object loanDecisionService {
+
+  implicit val predictionRequestTypeInfo: TypeInformation[predictionRequest] = TypeInformation.of(classOf[predictionRequest])
 
   class GenericAvroSerializer[T](
                                   schemaString: String,  // Pass schema as string instead of Schema object
@@ -52,17 +55,19 @@ object loanDecisionService {
     }
   }
 
-  abstract class StreamProducer(sleepMillisPerEvent: Int = 100,
-                                kafkaBootstrapServers: String = "localhost:9092",
-                                kafkaTransactionTimeout: Int = 5000,
-                                keySelector: predictionRequest => String = _.customerId.getOrElse(0).toString,
-                                flinkSemantic: FlinkKafkaProducer.Semantic = FlinkKafkaProducer.Semantic.EXACTLY_ONCE
-                               ) extends Serializable {
+  abstract class StreamProducer[T](sleepMillisPerEvent: Int = 100,
+                                   kafkaBootstrapServers: String = "localhost:9092",
+                                   kafkaTransactionTimeout: Int = 5000,
+                                   keySelector: T => String,
+                                   flinkSemantic: FlinkKafkaProducer.Semantic = FlinkKafkaProducer.Semantic.EXACTLY_ONCE
+                                  )(implicit typeInfo: TypeInformation[T]) extends Serializable {
+
     // Abstract members
     protected def schemaString: String
     protected def topicName: String
     protected def printEnabled: Boolean = false
-    protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit
+    protected def toGenericRecord(element: T, record: GenericRecord): Unit
+    protected def convertToT(request: predictionRequest): T
 
     // Create components in produce() method instead of class level
     def produce(): Unit = {
@@ -76,7 +81,7 @@ object loanDecisionService {
 
       val serializer = createSerializer()
 
-      val sourceEvents = env.addSource(sourceGenerator)
+      val sourceEvents: DataStream[T] = env.addSource(sourceGenerator).map(x => convertToT(x))
       val eventsPerRequest = sourceEvents.keyBy(keySelector)
 
       // 2-) Create Event Stream
@@ -84,7 +89,7 @@ object loanDecisionService {
        *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available - Not Necessary, used for showcasing
        * **************************************************************************************************************************************************** */
       val processedRequests = eventsPerRequest.process(
-        new KeyedProcessFunction[String, predictionRequest, predictionRequest] {
+        new KeyedProcessFunction[String, T, T] {
           @transient private var stateCounter: ValueState[Long] = _
 
           override def open(parameters: Configuration): Unit = {
@@ -93,9 +98,9 @@ object loanDecisionService {
           }
 
           override def processElement(
-                                       value: predictionRequest,
-                                       ctx: KeyedProcessFunction[String, predictionRequest, predictionRequest]#Context,
-                                       out: Collector[predictionRequest]
+                                       value: T,
+                                       ctx: KeyedProcessFunction[String, T, T]#Context,
+                                       out: Collector[T]
                                      ): Unit = {
             val currentState = Option(stateCounter.value()).getOrElse(0L)
             stateCounter.update(currentState + 1)
@@ -105,7 +110,7 @@ object loanDecisionService {
       )
 
       // 3-) Instantiate Kafka Producer with Avro serialization
-      val kafkaProducer = new FlinkKafkaProducer[predictionRequest](
+      val kafkaProducer = new FlinkKafkaProducer[T](
         topicName,
         serializer,
         kafkaProps,
@@ -121,8 +126,8 @@ object loanDecisionService {
       env.execute(s"Stream Producer for $topicName")
     }
 
-    private def createSerializer(): GenericAvroSerializer[predictionRequest] = {
-      new GenericAvroSerializer[predictionRequest](
+    private def createSerializer(): GenericAvroSerializer[T] = {
+      new GenericAvroSerializer[T](
         schemaString = schemaString,
         topic = topicName,
         toGenericRecord = toGenericRecord
@@ -153,10 +158,13 @@ object loanDecisionService {
 
 
   // Implementation for Income Prediction Producer
-  class IncomePredictionProducer extends StreamProducer with Serializable {
+  class IncomePredictionProducer extends StreamProducer[predictionRequest](
+    keySelector = _.customerId.getOrElse(0).toString
+  )(implicitly[TypeInformation[predictionRequest]]) {
     override protected def schemaString: String = SCHEMA_STRING_INCOME_PREDICTION
     override protected def topicName: String = "income_prediction_request"
     override protected def printEnabled: Boolean = false
+    override protected def convertToT(request: predictionRequest): predictionRequest = request
 
     override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
       record.put("requestId", element.requestId.orNull)
@@ -189,10 +197,13 @@ object loanDecisionService {
     """.stripMargin
 
   // Implementation for NPL Producer
-  class NplPredictionProducer extends StreamProducer with Serializable {
+  class NplPredictionProducer extends StreamProducer[predictionRequest](
+    keySelector = _.customerId.getOrElse(0).toString
+  ) (implicitly[TypeInformation[predictionRequest]]) {
     override protected def schemaString: String = SCHEMA_STRING_NPL_PREDICTION
     override protected def topicName: String = "npl_prediction_request"
     override protected def printEnabled: Boolean = true
+    override protected def convertToT(request: predictionRequest): predictionRequest = request
 
     override protected def toGenericRecord(element: predictionRequest, record: GenericRecord): Unit = {
       record.put("requestId", element.requestId.orNull)
