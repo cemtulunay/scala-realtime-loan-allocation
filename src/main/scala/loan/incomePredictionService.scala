@@ -86,24 +86,141 @@ object incomePredictionService {
     }
   }
 
-  def incomePredictionRequestConsumer(): Unit = {
-    // 1-) Setup Environment
-    val env = StreamExecutionEnvironment.getExecutionEnvironment
 
-    // Enable checkpointing for reliability
-    env.enableCheckpointing(10000)
+  // Generic Avro Kafka Deserialization Schema
+  class GenericAvroDeserializer(schema: Schema) extends KafkaDeserializationSchema[GenericRecord] {
+    override def isEndOfStream(nextElement: GenericRecord): Boolean = false
 
-    // Register custom Kryo serializer
-    env.getConfig.addDefaultKryoSerializer(
-      classOf[GenericRecord],
-      classOf[GenericRecordKryoSerializer]
-    )
+    override def deserialize(record: ConsumerRecord[Array[Byte], Array[Byte]]): GenericRecord = {
+      try {
+        val bytes = record.value()
 
-    // Ensure generic types are supported
-    //env.getConfig.setGenericTypes(true)
+        val reader: DatumReader[GenericRecord] = new GenericDatumReader[GenericRecord](schema)
+        val decoder = DecoderFactory.get().binaryDecoder(new ByteArrayInputStream(bytes), null)
 
-    // 2-) Define Avro schema
-    val schemaString =
+        val genericRecord = reader.read(null, decoder)
+
+        if (genericRecord == null) {
+          throw new IllegalStateException("Deserialized record is null")
+        }
+
+        genericRecord
+      } catch {
+        case e: Exception =>
+          println(s"Deserialization error: ${e.getMessage}")
+          e.printStackTrace()
+          throw e
+      }
+    }
+
+    override def getProducedType(): TypeInformation[GenericRecord] =
+      TypeExtractor.getForClass(classOf[GenericRecord])
+  }
+
+  // The generic abstract base class for Stream Consumers
+  abstract class StreamConsumer[T <: Serializable](
+                                                    topicName: String,
+                                                    schemaString: String,
+                                                    bootstrapServers: String = "localhost:9092",
+                                                    consumerGroupId: String,
+                                                    jdbcUrl: String = "jdbc:postgresql://localhost:5432/loan_db",
+                                                    jdbcUsername: String = "docker",
+                                                    jdbcPassword: String = "docker"
+                                                  ) {
+
+    protected val schema: Schema = new Schema.Parser().parse(schemaString)
+
+    // 1-) Configure Kafka properties
+    protected def createKafkaProperties(): Properties = {
+      val kafkaProps = new Properties()
+      kafkaProps.setProperty("bootstrap.servers", bootstrapServers)
+      kafkaProps.setProperty("group.id", consumerGroupId)
+      kafkaProps.setProperty("auto.offset.reset", "latest")
+      kafkaProps.setProperty("enable.auto.commit", "false")
+      kafkaProps
+    }
+
+    // 2-) Create a Kafka consumer with generic Avro deserializer
+    protected def createKafkaConsumer(): FlinkKafkaConsumer[GenericRecord] = {
+      val consumer = new FlinkKafkaConsumer[GenericRecord](
+        topicName,
+        new GenericAvroDeserializer(schema),
+        createKafkaProperties()
+      )
+      consumer.setStartFromEarliest()
+      consumer
+    }
+
+    // 3-) Define the SQL insert statement
+    protected def getSqlInsertStatement(): String
+
+    // 4-) Create a JDBC statement builder
+    protected def createJdbcStatementBuilder(): JdbcStatementBuilder[T]
+
+    // 5-) Map GenericRecord to domain object - provides a critical translation layer between your streaming infrastructure and application-specific code
+    //     Without createRecordMapper(), system would be forced to work directly with untyped GenericRecord objects throughout the pipeline. Would unable to leverage Scala's type system for safety
+    protected def createRecordMapper(): MapFunction[GenericRecord, T]
+
+    // 6-) Configure and execute the stream processing
+    def execute(): Unit = {
+      // 6.1-) Setup Flink environment
+      val env = StreamExecutionEnvironment.getExecutionEnvironment
+
+      // Enable checkpointing for reliability
+      env.enableCheckpointing(10000)
+
+      // Register custom Kryo serializer
+      env.getConfig.addDefaultKryoSerializer(
+        classOf[GenericRecord],
+        classOf[GenericRecordKryoSerializer]
+      )
+
+      // 6.2-) Create source stream
+      val stream = env.addSource(createKafkaConsumer())
+
+      // 6.3-) Process the records
+      val processedStream = stream.map(createRecordMapper())
+
+      // 6.4-) Save to database
+      processedStream.addSink(
+        JdbcSink.sink[T](
+          getSqlInsertStatement(),
+          createJdbcStatementBuilder(),
+          JdbcExecutionOptions.builder()
+            .withBatchSize(1000)
+            .withBatchIntervalMs(200)
+            .withMaxRetries(5)
+            .build(),
+          new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+            .withUrl(jdbcUrl)
+            .withDriverName("org.postgresql.Driver")
+            .withUsername(jdbcUsername)
+            .withPassword(jdbcPassword)
+            .build()
+        )
+      )
+
+      // Execute job
+      env.execute(s"Stream Consumer for $topicName")
+    }
+  }
+
+  // Case class for income prediction record
+  case class PredictionRecord(
+                               requestId: String,
+                               applicationId: String,
+                               customerId: Int,
+                               prospectId: Int,
+                               requestedAt: Long,
+                               incomeSource: String,
+                               isCustomer: Boolean,
+                               predictedIncome: Double
+                             ) extends Serializable
+
+  // Implementation of the abstract class for income prediction
+  class IncomePredictionConsumer extends StreamConsumer[PredictionRecord](
+    topicName = "income_prediction_request",
+    schemaString =
       """
         |{
         |  "type": "record",
@@ -119,153 +236,72 @@ object incomePredictionService {
         |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
         |  ]
         |}
-    """.stripMargin
-    val schema = new Schema.Parser().parse(schemaString)
+      """.stripMargin,
+    consumerGroupId = "income_prediction_request_consumer"
+  ) {
 
-    // 3-) Configure Kafka properties
-    val kafkaProps = new Properties()
-    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
-    kafkaProps.setProperty("group.id", "income_prediction_request_consumer")
-    kafkaProps.setProperty("auto.offset.reset", "latest")
-    kafkaProps.setProperty("enable.auto.commit", "false")
+    override protected def getSqlInsertStatement(): String = {
+      """
+        |INSERT INTO income_predictions (
+        |  request_id, application_id, customer_id, prospect_id,
+        |  requested_at, income_source, is_customer, predicted_income,
+        |  processed_at, sent_to_npl
+        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, false)
+        |ON CONFLICT (request_id)
+        |DO UPDATE SET
+        |  predicted_income = EXCLUDED.predicted_income,
+        |  processed_at = CURRENT_TIMESTAMP,
+        |  sent_to_npl = false
+      """.stripMargin
+    }
 
-    // 4-) Create custom Avro deserialization schema
-    val avroDeserializer = new KafkaDeserializationSchema[GenericRecord] {
-      override def isEndOfStream(nextElement: GenericRecord): Boolean = false
+    override protected def createJdbcStatementBuilder(): JdbcStatementBuilder[PredictionRecord] = {
+      new JdbcStatementBuilder[PredictionRecord] {
+        override def accept(statement: PreparedStatement, record: PredictionRecord): Unit = {
+          statement.setString(1, record.requestId)
+          statement.setString(2, record.applicationId)
+          statement.setInt(3, record.customerId)
+          statement.setInt(4, record.prospectId)
+          statement.setLong(5, record.requestedAt)
+          statement.setString(6, record.incomeSource)
+          statement.setBoolean(7, record.isCustomer)
+          statement.setDouble(8, record.predictedIncome)
+        }
+      }
+    }
 
-      override def deserialize(record: ConsumerRecord[Array[Byte], Array[Byte]]): GenericRecord = {
-        try {
-          val bytes = record.value()
-
-          val reader: DatumReader[GenericRecord] = new GenericDatumReader[GenericRecord](schema)
-          val decoder = DecoderFactory.get().binaryDecoder(new ByteArrayInputStream(bytes), null)
-
-          val genericRecord = reader.read(null, decoder)
-
-          if (genericRecord == null) {
-            throw new IllegalStateException("Deserialized record is null")
+    override protected def createRecordMapper(): MapFunction[GenericRecord, PredictionRecord] = {
+      new MapFunction[GenericRecord, PredictionRecord] {
+        override def map(record: GenericRecord): PredictionRecord = {
+          try {
+            val customerId = record.get("customerId").toString.toInt
+            PredictionRecord(
+              requestId = record.get("requestId").toString,
+              applicationId = record.get("applicationId").toString,
+              customerId = customerId,
+              prospectId = record.get("prospectId").toString.toInt,
+              requestedAt = record.get("requestedAt").toString.toLong,
+              incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
+              isCustomer = Option(record.get("isCustomer")).exists(_.toString.toBoolean),
+              predictedIncome = 50000.0 + (customerId % 10) * 5000.0
+            )
+          } catch {
+            case e: Exception =>
+              println(s"Error processing record: ${e.getMessage}")
+              e.printStackTrace()
+              throw e
           }
-
-          genericRecord
-        } catch {
-          case e: Exception =>
-            println(s"Deserialization error: ${e.getMessage}")
-            e.printStackTrace()
-            throw e
-        }
-      }
-
-      override def getProducedType(): TypeInformation[GenericRecord] =
-        TypeExtractor.getForClass(classOf[GenericRecord])
-    }
-
-    // 5-) Create Kafka consumer with Avro deserializer
-    val kafkaConsumer = new FlinkKafkaConsumer[GenericRecord](
-      "income_prediction_request",
-      avroDeserializer,
-      kafkaProps
-    )
-
-    kafkaConsumer.setStartFromEarliest()
-
-    // 6-) Add source to Flink environment and process
-    val stream = env.addSource(kafkaConsumer)
-
-    // 7-) Define case class for postgreSql format
-    case class PredictionRecord(
-                                 requestId: String,
-                                 applicationId: String,
-                                 customerId: Int,
-                                 prospectId: Int,
-                                 requestedAt: Long,
-                                 incomeSource: String,
-                                 isCustomer: Boolean,
-                                 predictedIncome: Double
-                               ) extends Serializable
-
-
-    // 8-) Create a serializable function object for the mapping operation
-    class RecordMapper extends MapFunction[GenericRecord, PredictionRecord] with Serializable {
-      override def map(record: GenericRecord): PredictionRecord = {
-        try {
-          val customerId = record.get("customerId").toString.toInt
-          PredictionRecord(
-            requestId = record.get("requestId").toString,
-            applicationId = record.get("applicationId").toString,
-            customerId = customerId,
-            prospectId = record.get("prospectId").toString.toInt,
-            requestedAt = record.get("requestedAt").toString.toLong,
-            incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
-            isCustomer = Option(record.get("isCustomer")).exists(_.toString.toBoolean),
-            predictedIncome = 50000.0 + (customerId % 10) * 5000.0
-          )
-        } catch {
-          case e: Exception =>
-            println(s"Error processing record: ${e.getMessage}")
-            e.printStackTrace()
-            throw e
         }
       }
     }
-
-
-    // 9-) Process the Avro records and make income predictions
-    val processedStream = stream.map(new RecordMapper())
-
-    // 10-) Create a serializable statement builder class
-    class PredictionRecordJdbcBuilder extends JdbcStatementBuilder[PredictionRecord] with Serializable {
-      override def accept(statement: PreparedStatement, record: PredictionRecord): Unit = {
-        statement.setString(1, record.requestId)
-        statement.setString(2, record.applicationId)
-        statement.setInt(3, record.customerId)
-        statement.setInt(4, record.prospectId)
-        statement.setLong(5, record.requestedAt)
-        statement.setString(6, record.incomeSource)
-        statement.setBoolean(7, record.isCustomer)
-        statement.setDouble(8, record.predictedIncome)
-      }
-    }
-
-    // 11-) Save to PostgreSQL Serialized Data
-    processedStream.addSink(
-      JdbcSink.sink[PredictionRecord](
-        // SQL statement
-        """
-        INSERT INTO income_predictions (
-          request_id, application_id, customer_id, prospect_id,
-          requested_at, income_source, is_customer, predicted_income,
-          processed_at, sent_to_npl
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, false)
-        ON CONFLICT (request_id)
-        DO UPDATE SET
-          predicted_income = EXCLUDED.predicted_income,
-          processed_at = CURRENT_TIMESTAMP,
-          sent_to_npl = false
-        """,
-        // Parameter setter
-        new PredictionRecordJdbcBuilder(),
-        // JDBC connection options
-        JdbcExecutionOptions.builder()
-          .withBatchSize(1000)
-          .withBatchIntervalMs(200)
-          .withMaxRetries(5)
-          .build(),
-        // JDBC connection options
-        new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
-          .withUrl("jdbc:postgresql://localhost:5432/loan_db")
-          .withDriverName("org.postgresql.Driver")
-          .withUsername("docker")
-          .withPassword("docker")
-          .build()
-      )
-    )
-
-    //processedStream.print()
-    // Execute job
-    env.execute()
   }
 
-
+  // Refactored method to use the generic consumer
+  def incomePredictionRequestConsumer(): Unit = {
+    // Create and execute the consumer
+    val consumer = new IncomePredictionConsumer()
+    consumer.execute()
+  }
 
   /*********** event2 - Producer ************/
 
