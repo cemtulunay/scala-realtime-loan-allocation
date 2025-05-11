@@ -5,7 +5,7 @@ import org.apache.avro.generic.{GenericData, GenericDatumReader, GenericDatumWri
 import org.apache.avro.io.{DatumReader, DecoderFactory, EncoderFactory}
 import org.apache.flink.api.common.ExecutionConfig
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.java.typeutils.TypeExtractor
+import org.apache.flink.api.java.typeutils.{ResultTypeQueryable, TypeExtractor}
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
 import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer, KafkaDeserializationSchema, KafkaSerializationSchema}
 import org.apache.kafka.clients.consumer.ConsumerRecord
@@ -13,13 +13,14 @@ import com.esotericsoftware.kryo.Kryo
 import com.esotericsoftware.kryo.Serializer
 import com.esotericsoftware.kryo.io.Input
 import com.esotericsoftware.kryo.io.Output
+import loan.loanDecisionService.GenericAvroSerializer
 import org.apache.flink.api.common.functions.MapFunction
 import org.apache.flink.connector.jdbc.{JdbcConnectionOptions, JdbcExecutionOptions, JdbcSink, JdbcStatementBuilder}
 import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.kafka.clients.producer.ProducerRecord
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
-import java.sql.{Connection, DriverManager, PreparedStatement}
+import java.sql.{Connection, DriverManager, PreparedStatement, ResultSet}
 import java.util.Properties
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
@@ -307,85 +308,77 @@ object incomePredictionService {
 
 
 
-  // First, let's create a case class for the result records
-  case class PredictionResultRecord(
-                                     requestId: String,
-                                     applicationId: String,
-                                     customerId: Int,
-                                     prospectId: Int,
-                                     requestedAt: Long,
-                                     incomeSource: String,
-                                     isCustomer: Boolean,
-                                     predictedIncome: Double,
-                                     processedAt: Long,
-                                     sentToNpl: Boolean
-                                   ) extends Serializable
+  /**
+   * A generic PostgreSQL source that can read any type of record from a PostgreSQL database.
+   *
+   * @param jdbcUrl The JDBC URL to connect to
+   * @param username Database username
+   * @param password Database password
+   * @param query The SQL query to execute
+   * @param recordMapper Function to map a ResultSet to a record of type T
+   * @param updateQuery Optional query to update the processed record (e.g., mark as processed)
+   * @param updateQueryParamSetter Optional function to set parameters for the update query
+   * @param pollingInterval Interval in milliseconds between polling cycles
+   * @tparam T The type of records to produce
+   */
+  class GenericPostgreSQLSource[T](
+                                    jdbcUrl: String,
+                                    username: String,
+                                    password: String,
+                                    query: String,
+                                    recordMapper: ResultSet => T,
+                                    updateQuery: Option[String] = None,
+                                    updateQueryParamSetter: Option[(PreparedStatement, T) => Unit] = None,
+                                    pollingInterval: Long = 100,
+                                    private val typeInfo: TypeInformation[T]
+                                  ) extends SourceFunction[T] with ResultTypeQueryable[T] with Serializable {
 
-  // Modified the source class to use SourceFunction instead of RichSourceFunction
-  class PostgreSQLSource extends SourceFunction[PredictionResultRecord] with Serializable {
     @volatile private var connection: Connection = _
     @volatile private var preparedStatement: PreparedStatement = _
     @volatile private var isRunning: Boolean = true
 
-    override def run(ctx: SourceFunction.SourceContext[PredictionResultRecord]): Unit = {
+    override def run(ctx: SourceFunction.SourceContext[T]): Unit = {
       try {
         // Initialize connection
         connection = DriverManager.getConnection(
-          "jdbc:postgresql://localhost:5432/loan_db",
-          "docker",
-          "docker"
+          jdbcUrl,
+          username,
+          password
         )
 
-        preparedStatement = connection.prepareStatement("""
-        SELECT
-          request_id, application_id, customer_id, prospect_id,
-          requested_at, income_source, is_customer, predicted_income,
-          processed_at, sent_to_npl
-        FROM income_predictions
-        WHERE sent_to_npl = false
-        ORDER BY processed_at ASC
-      """)
+        preparedStatement = connection.prepareStatement(query)
 
         while (isRunning) {
           val resultSet = preparedStatement.executeQuery()
 
           while (resultSet.next()) {
-            val record = PredictionResultRecord(
-              requestId = resultSet.getString("request_id"),
-              applicationId = resultSet.getString("application_id"),
-              customerId = resultSet.getInt("customer_id"),
-              prospectId = resultSet.getInt("prospect_id"),
-              requestedAt = resultSet.getLong("requested_at"),
-              incomeSource = resultSet.getString("income_source"),
-              isCustomer = resultSet.getBoolean("is_customer"),
-              predictedIncome = resultSet.getDouble("predicted_income"),
-              processedAt = resultSet.getTimestamp("processed_at").getTime,
-              sentToNpl = resultSet.getBoolean("sent_to_npl")
-            )
-
+            val record = recordMapper(resultSet)
             ctx.collect(record)
-            updateRecordAsProcessed(record.requestId)
+
+            // Update the record if an update query is provided
+            (updateQuery, updateQueryParamSetter) match {
+              case (Some(uQuery), Some(paramSetter)) => updateRecord(uQuery, record, paramSetter)
+              case _ => // No update query or param setter
+            }
           }
 
           resultSet.close()
-          Thread.sleep(100)  // Poll every 0.1 second
+          Thread.sleep(pollingInterval)
         }
       } catch {
         case e: Exception =>
-          println(s"Error in PostgreSQLSource: ${e.getMessage}")
+          println(s"Error in GenericPostgreSQLSource: ${e.getMessage}")
           e.printStackTrace()
       } finally {
         cleanup()
       }
     }
 
-    private def updateRecordAsProcessed(requestId: String): Unit = {
+    private def updateRecord(updateQuery: String, record: T, paramSetter: (PreparedStatement, T) => Unit): Unit = {
       var updateStmt: PreparedStatement = null
       try {
-        updateStmt = connection.prepareStatement(
-          "UPDATE income_predictions SET sent_to_npl = true WHERE request_id = ?"
-        )
-        updateStmt.setString(1, requestId)
+        updateStmt = connection.prepareStatement(updateQuery)
+        paramSetter(updateStmt, record)
         updateStmt.executeUpdate()
       } finally {
         if (updateStmt != null) {
@@ -407,12 +400,148 @@ object incomePredictionService {
       isRunning = false
       cleanup()
     }
+
+    override def getProducedType: TypeInformation[T] = typeInfo
   }
 
-  // Modified serializer class
-  class PredictionResultSerializer extends KafkaSerializationSchema[PredictionResultRecord] {
-    override def serialize(record: PredictionResultRecord, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
-      val schema = new Schema.Parser().parse("""
+  /**
+   * Abstract base class for PostgreSQL to Kafka producers using Flink.
+   * This class provides a template for creating specific producers by extending it.
+   *
+   * @tparam T The type of records to produce
+   */
+  abstract class AbstractPostgreSQLToKafkaProducer[T] extends Serializable {
+
+    // Abstract methods to be implemented by subclasses
+    protected def getJobName: String
+    protected def getJdbcUrl: String
+    protected def getJdbcUsername: String
+    protected def getJdbcPassword: String
+    protected def getSelectQuery: String
+    protected def getUpdateQuery: Option[String] = None
+    protected def getUpdateQueryParamSetter: Option[(PreparedStatement, T) => Unit] = None
+    protected def getRecordMapper: ResultSet => T
+    protected def getPollingInterval: Long = 100
+    protected def getKafkaTopic: String
+    protected def getAvroSchema: String
+    protected def getToGenericRecord: (T, GenericRecord) => Unit
+    protected def getKeyExtractor: Option[T => Array[Byte]] = None
+    protected def getKafkaProperties: Properties
+    protected def getCheckpointInterval: Long = 10000
+    protected def shouldPrintResults: Boolean = true
+    protected def getTypeInformation: TypeInformation[T]
+
+    /**
+     * Main execution method that sets up and runs the Flink job.
+     */
+    def execute(): Unit = {
+      // Setup Environment
+      val env = StreamExecutionEnvironment.getExecutionEnvironment
+      env.enableCheckpointing(getCheckpointInterval)
+
+      // Create the source
+      val source = new GenericPostgreSQLSource[T](
+        jdbcUrl = getJdbcUrl,
+        username = getJdbcUsername,
+        password = getJdbcPassword,
+        query = getSelectQuery,
+        recordMapper = getRecordMapper,
+        updateQuery = getUpdateQuery,
+        updateQueryParamSetter = getUpdateQueryParamSetter,
+        pollingInterval = getPollingInterval,
+        typeInfo = getTypeInformation
+      )
+
+      val resultStream = env.addSource(source)
+
+      // Create the serializer
+      val serializer = new GenericAvroSerializer[T](
+        schemaString = getAvroSchema,
+        topic = getKafkaTopic,
+        toGenericRecord = getToGenericRecord,
+        keyExtractor = getKeyExtractor
+      )
+
+      // Add Kafka sink
+      resultStream.addSink(new FlinkKafkaProducer[T](
+        getKafkaTopic,
+        serializer,
+        getKafkaProperties,
+        FlinkKafkaProducer.Semantic.EXACTLY_ONCE
+      ))
+
+      // Optionally print the stream for debugging
+      if (shouldPrintResults) {
+        resultStream.print()
+      }
+
+      // Execute the job
+      env.execute(getJobName)
+    }
+  }
+
+  // Example usage with the original PredictionResultRecord
+
+    // Define the case class for the original use case
+    case class PredictionResultRecord(
+                                       requestId: String,
+                                       applicationId: String,
+                                       customerId: Int,
+                                       prospectId: Int,
+                                       requestedAt: Long,
+                                       incomeSource: String,
+                                       isCustomer: Boolean,
+                                       predictedIncome: Double,
+                                       processedAt: Long,
+                                       sentToNpl: Boolean
+                                     ) extends Serializable
+
+    /**
+     * Concrete implementation of AbstractPostgreSQLToKafkaProducer for income prediction results
+     */
+    class IncomePredictionResultProducer extends AbstractPostgreSQLToKafkaProducer[PredictionResultRecord] {
+
+      override protected def getJobName: String = "Income Prediction Result Producer"
+
+      override protected def getJdbcUrl: String = "jdbc:postgresql://localhost:5432/loan_db"
+
+      override protected def getJdbcUsername: String = "docker"
+
+      override protected def getJdbcPassword: String = "docker"
+
+      override protected def getSelectQuery: String = """
+      SELECT
+        request_id, application_id, customer_id, prospect_id,
+        requested_at, income_source, is_customer, predicted_income,
+        processed_at, sent_to_npl
+      FROM income_predictions
+      WHERE sent_to_npl = false
+      ORDER BY processed_at ASC
+    """
+
+      override protected def getUpdateQuery: Option[String] =
+        Some("UPDATE income_predictions SET sent_to_npl = true WHERE request_id = ?")
+
+      override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] =
+        Some((stmt, record) => stmt.setString(1, record.requestId))
+
+      override protected def getRecordMapper: ResultSet => PredictionResultRecord = rs =>
+        PredictionResultRecord(
+          requestId = rs.getString("request_id"),
+          applicationId = rs.getString("application_id"),
+          customerId = rs.getInt("customer_id"),
+          prospectId = rs.getInt("prospect_id"),
+          requestedAt = rs.getLong("requested_at"),
+          incomeSource = rs.getString("income_source"),
+          isCustomer = rs.getBoolean("is_customer"),
+          predictedIncome = rs.getDouble("predicted_income"),
+          processedAt = rs.getTimestamp("processed_at").getTime,
+          sentToNpl = rs.getBoolean("sent_to_npl")
+        )
+
+      override protected def getKafkaTopic: String = "income_prediction_result"
+
+      override protected def getAvroSchema: String = """
       {
         "type": "record",
         "name": "IncomePredictionResult",
@@ -430,82 +559,64 @@ object incomePredictionService {
           {"name": "sentToNpl", "type": "boolean"}
         ]
       }
-    """)
+    """
 
-      val avroRecord = new GenericData.Record(schema)
-      avroRecord.put("requestId", record.requestId)
-      avroRecord.put("applicationId", record.applicationId)
-      avroRecord.put("customerId", record.customerId)
-      avroRecord.put("prospectId", record.prospectId)
-      avroRecord.put("requestedAt", record.requestedAt)
-      avroRecord.put("incomeSource", record.incomeSource)
-      avroRecord.put("isCustomer", record.isCustomer)
-      avroRecord.put("predictedIncome", record.predictedIncome)
-      avroRecord.put("processedAt", record.processedAt)  // Now using Long directly
-      avroRecord.put("sentToNpl", record.sentToNpl)
+      override protected def getToGenericRecord: (PredictionResultRecord, GenericRecord) => Unit = (record, avroRecord) => {
+        avroRecord.put("requestId", record.requestId)
+        avroRecord.put("applicationId", record.applicationId)
+        avroRecord.put("customerId", record.customerId)
+        avroRecord.put("prospectId", record.prospectId)
+        avroRecord.put("requestedAt", record.requestedAt)
+        avroRecord.put("incomeSource", record.incomeSource)
+        avroRecord.put("isCustomer", record.isCustomer)
+        avroRecord.put("predictedIncome", record.predictedIncome)
+        avroRecord.put("processedAt", record.processedAt)
+        avroRecord.put("sentToNpl", record.sentToNpl)
+      }
 
-      val writer = new GenericDatumWriter[GenericRecord](schema)
-      val out = new ByteArrayOutputStream()
-      val encoder = EncoderFactory.get().binaryEncoder(out, null)
-      writer.write(avroRecord, encoder)
-      encoder.flush()
+      override protected def getKeyExtractor: Option[PredictionResultRecord => Array[Byte]] =
+        Some(record => record.requestId.getBytes())
 
-      new ProducerRecord[Array[Byte], Array[Byte]](
-        "income_prediction_result",
-        record.requestId.getBytes(),
-        out.toByteArray
-      )
+      override protected def getKafkaProperties: Properties = {
+        val props = new Properties()
+        props.setProperty("bootstrap.servers", "localhost:9092")
+        props.setProperty("transaction.timeout.ms", "5000")
+        props.setProperty("retention.ms", "-1")  // infinite retention
+        props.setProperty("cleanup.policy", "delete")
+        props
+      }
+
+      override protected def getTypeInformation: TypeInformation[PredictionResultRecord] = {
+        TypeInformation.of(classOf[PredictionResultRecord])
+      }
+
+      // Method to create and execute the income prediction result producer.
+      def incomePredictionResultProducer(): Unit = {
+        val producer = new IncomePredictionResultProducer()
+        producer.execute()
+      }
     }
-  }
-
-  def incomePredictionResultProducer(): Unit = {
-
-    // 1-) Setup Environment and add postgreSql as a Source
-    val env = StreamExecutionEnvironment.getExecutionEnvironment
-    env.enableCheckpointing(10000)
-
-    val resultStream = env.addSource(new PostgreSQLSource())
-
-    // 2-) Instantiate Kafka Producer with Avro serialization
-    val kafkaProps = new Properties()
-    kafkaProps.setProperty("bootstrap.servers", "localhost:9092")
-    kafkaProps.setProperty("transaction.timeout.ms", "5000")
-    kafkaProps.setProperty("retention.ms", "-1")  // infinite retention
-    kafkaProps.setProperty("cleanup.policy", "delete")
-
-    // 3-) Instantiate Kafka Producer with Avro serialization and pass Stream to Kafka Producer
-    resultStream.addSink(new FlinkKafkaProducer[PredictionResultRecord](
-      "income_prediction_result",
-      new PredictionResultSerializer(),
-      kafkaProps,
-      FlinkKafkaProducer.Semantic.EXACTLY_ONCE
-    ))
-
-    resultStream.print()
-    env.execute("Income Prediction Result Producer")
-  }
 
   def main(args: Array[String]): Unit = {
-    // Create futures for both processes
+    // Create futures for consumer and producer
     val consumerFuture = Future {
-      incomePredictionRequestConsumer()
+      new IncomePredictionConsumer().execute()
     }
 
     val producerFuture = Future {
-      incomePredictionResultProducer()
+      // Directly create and execute the producer
+      new IncomePredictionResultProducer().execute()
     }
 
-    // Combine futures and wait for both to complete
+    // Run both processes
     val combinedFuture = Future.sequence(Seq(consumerFuture, producerFuture))
 
     try {
-      // Wait indefinitely for both processes
       Await.result(combinedFuture, Duration.Inf)
     } catch {
       case e: Exception =>
         println(s"Error in one of the processes: ${e.getMessage}")
         e.printStackTrace()
-        // You might want to gracefully shutdown both processes here
         System.exit(1)
     }
   }
