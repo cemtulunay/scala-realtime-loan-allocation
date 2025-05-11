@@ -297,12 +297,6 @@ object incomePredictionService {
     }
   }
 
-  // Refactored method to use the generic consumer
-  def incomePredictionRequestConsumer(): Unit = {
-    // Create and execute the consumer
-    val consumer = new IncomePredictionConsumer()
-    consumer.execute()
-  }
 
   /*********** event2 - Producer ************/
 
@@ -590,11 +584,6 @@ object incomePredictionService {
         TypeInformation.of(classOf[PredictionResultRecord])
       }
 
-      // Method to create and execute the income prediction result producer.
-      def incomePredictionResultProducer(): Unit = {
-        val producer = new IncomePredictionResultProducer()
-        producer.execute()
-      }
     }
 
   def main(args: Array[String]): Unit = {
