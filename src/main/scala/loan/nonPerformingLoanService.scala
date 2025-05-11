@@ -1,6 +1,5 @@
 package loan
 
-import loan.incomePredictionService.GenericRecordKryoSerializer
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericDatumReader, GenericRecord}
 import org.apache.avro.io.{DatumReader, DecoderFactory}
@@ -12,6 +11,7 @@ import org.apache.flink.connector.jdbc.{JdbcConnectionOptions, JdbcExecutionOpti
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, KafkaDeserializationSchema}
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import serializer.GenericRecordKryoSerializer
 
 import java.io.ByteArrayInputStream
 import java.sql.PreparedStatement
