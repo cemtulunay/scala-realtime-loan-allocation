@@ -10,6 +10,28 @@ import serializer.{GenericAvroDeserializer, GenericRecordKryoSerializer}
 
 import java.util.Properties
 
+/**
+ * A generalized abstract class for Flink-based Kafka consumers that read data from a Kafka topic
+ * and save it to a database. This class handles the common pipeline setup for consuming,
+ * processing, and storing data.
+ *
+ * @param topicName Name of the Kafka topic to consume from
+ * @param schemaString Avro schema for deserializing Kafka messages
+ * @param bootstrapServers Kafka server addresses (comma-separated)
+ * @param consumerGroupId Identifier for the consumer group
+ * @param jdbcUrl Connection URL for the target database
+ * @param jdbcUsername Database username
+ * @param jdbcPassword Database password
+ * @param withBatchSize Number of records to batch before writing to database
+ * @param withBatchIntervalMs Maximum time (ms) to wait before writing a batch
+ * @param withMaxRetries Number of retries for database operations
+ * @param withDriverName JDBC driver class name
+ * @param checkpointingIntervalMs Interval (ms) between state checkpoints
+ * @param autoOffsetReset Strategy for offset when none exists (latest/earliest)
+ * @param enableAutoCommit Whether to auto-commit offsets to Kafka
+ * @tparam T The target domain object type (must be Serializable)
+ */
+
 // The generic abstract base class for Stream Consumers
 abstract class StreamConsumer[T <: Serializable](
                                                   topicName: String,
@@ -25,7 +47,8 @@ abstract class StreamConsumer[T <: Serializable](
                                                   withDriverName: String ="org.postgresql.Driver",
                                                   checkpointingIntervalMs: Int = 10000,
                                                   autoOffsetReset: String = "latest",
-                                                  enableAutoCommit: String = "false"
+                                                  enableAutoCommit: String = "false",
+                                                  printToConsole: Boolean = false
                                                 ) {
 
   protected val schema: Schema = new Schema.Parser().parse(schemaString)
@@ -80,6 +103,10 @@ abstract class StreamConsumer[T <: Serializable](
 
     // 6.3-) Process the records
     val processedStream = stream.map(createRecordMapper())
+
+    if (printToConsole) {
+      processedStream.print()
+    }
 
     // 6.4-) Save to database
     processedStream.addSink(

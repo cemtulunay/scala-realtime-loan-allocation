@@ -14,6 +14,26 @@ import serializer.GenericAvroSerializer
 
 import java.util.Properties
 
+/**
+ * A generalized abstract class for creating Flink-based Kafka producers.
+ * This class handles the pipeline setup for streaming data from a source,
+ * processing it, and sending it to a Kafka topic using Avro serialization.
+ *
+ * @param sleepMillisPerEvent Time to wait between generating events (milliseconds)
+ * @param kafkaBootstrapServers Kafka server addresses (comma-separated)
+ * @param kafkaTransactionTimeout Timeout for Kafka transactions (milliseconds)
+ * @param keySelector Function to extract a key from records (for partitioning)
+ * @param flinkSemantic Delivery guarantee level (EXACTLY_ONCE, AT_LEAST_ONCE, etc.)
+ * @tparam S Source data type - The initial format of data coming from the source generator
+ * @tparam T Target data type - The transformed format that will be sent to Kafka
+ *           * Using two type parameters (S and T) is crucial because it:
+ *           * 1. Enables type-safe conversion between source data format and Kafka-ready format
+ *           * 2. Maintains compile-time validation of transformations
+ *           * 3. Allows flexibility to work with any source/target data types without cast operations
+ *           * 4. Separates concerns: data generation vs. data publishing
+ */
+
+
 // Fully generalized StreamProducer
 abstract class StreamProducer[S, T](
                                      protected val sleepMillisPerEvent: Int = 100,
