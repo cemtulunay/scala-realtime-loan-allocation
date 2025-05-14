@@ -56,9 +56,9 @@ object incomePredictionService {
       """
         |INSERT INTO income_predictions (
         |  request_id, application_id, customer_id, prospect_id,
-        |  requested_at, income_source, is_customer, predicted_income,
-        |  processed_at, sent_to_npl
-        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, false)
+        |  requested_at, income_source, sourceMicroService, is_customer,
+        |   predicted_income, processed_at, sent_to_npl
+        |) VALUES (?, ?, ?, ?, ?, ?, 'income_prediction_request', ?, ?, CURRENT_TIMESTAMP, false)
         |ON CONFLICT (request_id)
         |DO UPDATE SET
         |  predicted_income = EXCLUDED.predicted_income,
@@ -86,16 +86,16 @@ object incomePredictionService {
       new MapFunction[GenericRecord, PredictionRecord] {
         override def map(record: GenericRecord): PredictionRecord = {
           try {
-            val customerId = record.get("customerId").toString.toInt
+            val prospectId = record.get("prospectId").toString.toInt
             PredictionRecord(
               requestId = record.get("requestId").toString,
               applicationId = record.get("applicationId").toString,
-              customerId = customerId,
-              prospectId = record.get("prospectId").toString.toInt,
+              customerId = record.get("customerId").toString.toInt,
+              prospectId = prospectId,
               requestedAt = record.get("requestedAt").toString.toLong,
               incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
               isCustomer = Option(record.get("isCustomer")).exists(_.toString.toBoolean),
-              predictedIncome = 50000.0 + (customerId % 10) * 5000.0
+              predictedIncome = 50000.0 + (prospectId % 10) * 5000.0
             )
           } catch {
             case e: Exception =>
@@ -119,6 +119,7 @@ object incomePredictionService {
                                        prospectId: Int,
                                        requestedAt: Long,
                                        incomeSource: String,
+                                       sourceMicroService:String,
                                        isCustomer: Boolean,
                                        predictedIncome: Double,
                                        processedAt: Long,
@@ -131,29 +132,20 @@ object incomePredictionService {
     class IncomePredictionResultProducer extends AbstractPostgreSQLToKafkaProducer[PredictionResultRecord] {
 
       override protected def getJobName: String = "Income Prediction Result Producer"
-
       override protected def getJdbcUrl: String = "jdbc:postgresql://localhost:5432/loan_db"
-
       override protected def getJdbcUsername: String = "docker"
-
       override protected def getJdbcPassword: String = "docker"
-
       override protected def getSelectQuery: String = """
       SELECT
         request_id, application_id, customer_id, prospect_id,
-        requested_at, income_source, is_customer, predicted_income,
-        processed_at, sent_to_npl
+        requested_at, income_source, sourceMicroService, is_customer,
+        predicted_income, processed_at, sent_to_npl
       FROM income_predictions
       WHERE sent_to_npl = false
       ORDER BY processed_at ASC
     """
-
-      override protected def getUpdateQuery: Option[String] =
-        Some("UPDATE income_predictions SET sent_to_npl = true WHERE request_id = ?")
-
-      override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] =
-        Some((stmt, record) => stmt.setString(1, record.requestId))
-
+      override protected def getUpdateQuery: Option[String] = Some("UPDATE income_predictions SET sent_to_npl = true WHERE request_id = ?")
+      override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] = Some((stmt, record) => stmt.setString(1, record.requestId))
       override protected def getRecordMapper: ResultSet => PredictionResultRecord = rs =>
         PredictionResultRecord(
           requestId = rs.getString("request_id"),
@@ -162,14 +154,13 @@ object incomePredictionService {
           prospectId = rs.getInt("prospect_id"),
           requestedAt = rs.getLong("requested_at"),
           incomeSource = rs.getString("income_source"),
+          sourceMicroService = rs.getString("sourceMicroService"),
           isCustomer = rs.getBoolean("is_customer"),
           predictedIncome = rs.getDouble("predicted_income"),
           processedAt = rs.getTimestamp("processed_at").getTime,
           sentToNpl = rs.getBoolean("sent_to_npl")
         )
-
       override protected def getKafkaTopic: String = "income_prediction_result"
-
       override protected def getAvroSchema: String = """
       {
         "type": "record",
@@ -182,6 +173,7 @@ object incomePredictionService {
           {"name": "prospectId", "type": "int"},
           {"name": "requestedAt", "type": "long"},
           {"name": "incomeSource", "type": ["null", "string"]},
+          {"name": "sourceMicroService", "type": "string"},
           {"name": "isCustomer", "type": "boolean"},
           {"name": "predictedIncome", "type": "double"},
           {"name": "processedAt", "type": "long"},
@@ -197,6 +189,7 @@ object incomePredictionService {
         avroRecord.put("prospectId", record.prospectId)
         avroRecord.put("requestedAt", record.requestedAt)
         avroRecord.put("incomeSource", record.incomeSource)
+        avroRecord.put("sourceMicroService", record.sourceMicroService)
         avroRecord.put("isCustomer", record.isCustomer)
         avroRecord.put("predictedIncome", record.predictedIncome)
         avroRecord.put("processedAt", record.processedAt)
@@ -221,6 +214,7 @@ object incomePredictionService {
 
     }
 
+
   def main(args: Array[String]): Unit = {
     // Create futures for consumer and producer
     val consumerFuture = Future {
@@ -244,4 +238,5 @@ object incomePredictionService {
         System.exit(1)
     }
   }
+
 }

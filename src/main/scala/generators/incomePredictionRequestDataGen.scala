@@ -23,7 +23,8 @@ case class predictionRequest(
 class predictionRequestGenerator(
                                         sleepMillisPerEvent: Int,
                                         baseInstant: Instant = Instant.now(),
-                                        extraDelayInMillisOnEveryTenEvents: Option[Long] = None
+                                        extraDelayInMillisOnEveryTenEvents: Option[Long] = None,
+                                        isCustomerParameter: Boolean = true
                                       ) extends RichParallelSourceFunction[predictionRequest] {
 
   @volatile private var running = true
@@ -41,7 +42,8 @@ class predictionRequestGenerator(
   }
 
   private def generateEvent(id: Long): predictionRequest = {
-    val isCustomer = Random.nextDouble() < 0.8 // 80% chance of being a customer
+    // val isCustomer = Random.nextDouble() < 0.8 // 80% chance of being a customer
+    val isCustomer:Boolean = isCustomerParameter
     val customerId = if (isCustomer) Some(Random.nextInt(999999) + 1000000) else Some(0)
     val oneDayAgo = System.currentTimeMillis() - (24 * 60 * 60 * 1000) // 24 hours ago in milliseconds - This will immitate the batch operation time
 
@@ -52,7 +54,7 @@ class predictionRequestGenerator(
       prospectId = if (!isCustomer) Some(Random.nextInt(999999) + 2000000) else Some(0),
       requestedAt = if (!isCustomer) Some(baseInstant.plusSeconds(id).toEpochMilli) else Some(oneDayAgo),
       incomeSource = if (!isCustomer) "real-time" else "batch",
-      isCustomer,
+      isCustomer = isCustomer,
       predictedIncome = if (!isCustomer) Some(0) else Some(50000.0 + (customerId.getOrElse(0) % 10) * 5000.0)
     )
   }

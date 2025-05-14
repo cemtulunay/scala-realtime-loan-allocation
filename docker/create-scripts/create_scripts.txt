@@ -1,0 +1,71 @@
+CREATE TABLE public.income_predictions (
+	request_id varchar(255) NOT NULL,
+	application_id varchar(255) NOT NULL,
+	customer_id int4 NOT NULL,
+	prospect_id int4 NOT NULL,
+	requested_at int8 NOT NULL,
+	income_source varchar(255) NULL,
+	sourceMicroService varchar(255) NULL,
+	is_customer bool NULL,
+	predicted_income float8 NOT NULL,
+	processed_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	sent_to_npl bool DEFAULT false NULL,
+	CONSTRAINT income_predictions_pkey PRIMARY KEY (request_id)
+);
+CREATE INDEX idx_income_not_sent ON public.income_predictions USING btree (sent_to_npl) WHERE (sent_to_npl = false);
+
+
+
+CREATE TABLE public.income_predictions_result (
+	request_id varchar(255) NOT NULL,
+	application_id varchar(255) NOT NULL,
+	customer_id int4 NOT NULL,
+	prospect_id int4 NOT NULL,
+	requested_at int8 NOT NULL,
+	income_source varchar(255) NULL,
+	sourceMicroService varchar(255) NULL,
+	is_customer bool NULL,
+	predicted_income float8 NOT NULL,
+	processed_at timestamp NULL,
+	sent_to_npl bool DEFAULT true NULL,
+	ldes_processed_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	sent_to_ldes bool DEFAULT false NULL,
+	CONSTRAINT income_predictions_result_pkey PRIMARY KEY (request_id)
+);
+CREATE INDEX idx_not_sent_to_ldes ON public.income_predictions_result USING btree (sent_to_ldes) WHERE (sent_to_ldes = false);
+
+
+
+
+
+--QUERIES - 1
+Select * from income_predictions where sent_to_npl = true;
+
+--truncate table income_predictions;
+Select count(*) from income_predictions;
+Select * from income_predictions where processed_at = (Select max(processed_at) from income_predictions);
+Select count(*) from income_predictions where sent_to_npl = true;
+Select * from income_predictions
+Select * from income_predictions row_id = max(row_id)
+Select * from income_predictions where is_customer = false
+Select * from income_predictions where request_id  = '264ce727-1410-406e-a0be-fb8453fbe60e'
+SELECT ctid FROM income_predictions ORDER BY ctid DESC LIMIT 100;
+
+
+
+
+
+
+
+--QUERIES - 2
+Select count(*) from income_predictions_result;
+Select count(*) from income_predictions_result where income_source = 'real-time';
+
+--truncate table income_predictions_result;
+Select * from income_predictions_result where income_source = 'real-time' and ldes_processed_at = (Select max(ldes_processed_at) from income_predictions_result where income_source = 'real-time');
+Select * from income_predictions_result where income_source = 'batch' and ldes_processed_at = (Select max(ldes_processed_at) from income_predictions_result where income_source = 'batch');
+Select * from income_predictions_result where request_id = '264ce727-1410-406e-a0be-fb8453fbe60e'
+Select * from income_predictions_result where income_source = 'batch' and sourcemicroservice <> 'npl_prediction_request';
+Select * from income_predictions_result where income_source = 'batch' and sourcemicroservice = 'npl_prediction_request';
+Select * from income_predictions_result where income_source = 'real-time' and sourcemicroservice <> '';
+Select * from income_predictions_result where income_source = 'real-time' and sourcemicroservice = 'income_prediction_request';
