@@ -22,13 +22,14 @@ object loanDecisionService {
       |  "name": "IncomePredictionRequest",
       |  "namespace": "loan",
       |  "fields": [
-      |    {"name": "requestId", "type": ["string"]},
-      |    {"name": "applicationId", "type": ["string"]},
-      |    {"name": "customerId", "type": ["int"]},
-      |    {"name": "prospectId", "type": ["int"]},
-      |    {"name": "requestedAt", "type": ["long"]},
+      |    {"name": "requestId", "type": "string"},
+      |    {"name": "applicationId", "type": "string"},
+      |    {"name": "customerId", "type": "int"},
+      |    {"name": "prospectId", "type": "int"},
+      |    {"name": "incomeRequestedAt", "type": "long"},
+      |    {"name": "e1ProducedAt", "type": "long"},
       |    {"name": "incomeSource", "type": ["null","string"], "default": null},
-      |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
+      |    {"name": "isCustomer", "type": "boolean"}
       |  ]
       |}
     """.stripMargin
@@ -48,7 +49,8 @@ object loanDecisionService {
       record.put("applicationId", element.applicationId.orNull)
       record.put("customerId", element.customerId.getOrElse(0))
       record.put("prospectId", element.prospectId.getOrElse(0))
-      record.put("requestedAt", element.requestedAt.getOrElse(0L))
+      record.put("incomeRequestedAt", element.incomeRequestedAt.getOrElse(0L))
+      record.put("e1ProducedAt", element.e1ProducedAt.getOrElse(0L))
       record.put("incomeSource", element.incomeSource)
       record.put("isCustomer", element.isCustomer)
     }
@@ -67,9 +69,10 @@ object loanDecisionService {
       |    {"name": "applicationId", "type": "string"},
       |    {"name": "customerId", "type": "int"},
       |    {"name": "prospectId", "type": "int"},
-      |    {"name": "requestedAt", "type": "long"},
+      |    {"name": "incomeRequestedAt", "type": "long"},
+      |    {"name": "e1ProducedAt", "type": "long"},
       |    {"name": "incomeSource", "type": ["null","string"], "default": null},
-      |    {"name": "isCustomer", "type": "boolean"},
+      |    {"name": "isCustomer", "type": "boolean"}
       |    {"name": "predictedIncome", "type": "double"}
       |  ]
       |}
@@ -90,7 +93,8 @@ object loanDecisionService {
       record.put("applicationId", element.applicationId.orNull)
       record.put("customerId", element.customerId.getOrElse(0))
       record.put("prospectId", element.prospectId.getOrElse(0))
-      record.put("requestedAt", element.requestedAt.getOrElse(0L))
+      record.put("incomeRequestedAt", element.incomeRequestedAt.getOrElse(0L))
+      record.put("e1ProducedAt", element.e1ProducedAt.getOrElse(0L))
       record.put("incomeSource", element.incomeSource)
       record.put("isCustomer", element.isCustomer)
       record.put("predictedIncome", element.predictedIncome.getOrElse(0))

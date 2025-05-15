@@ -23,7 +23,8 @@ object incomePredictionService {
                                applicationId: String,
                                customerId: Int,
                                prospectId: Int,
-                               requestedAt: Long,
+                               incomeRequestedAt: Long,
+                               e1ProducedAt: Long,
                                incomeSource: String,
                                isCustomer: Boolean,
                                predictedIncome: Double
@@ -39,30 +40,30 @@ object incomePredictionService {
         |  "name": "IncomePredictionRequest",
         |  "namespace": "loan",
         |  "fields": [
-        |    {"name": "requestId", "type": ["string"]},
-        |    {"name": "applicationId", "type": ["string"]},
-        |    {"name": "customerId", "type": ["int"]},
-        |    {"name": "prospectId", "type": ["int"]},
-        |    {"name": "requestedAt", "type": ["long"]},
+        |    {"name": "requestId", "type": "string"},
+        |    {"name": "applicationId", "type": "string"},
+        |    {"name": "customerId", "type": "int"},
+        |    {"name": "prospectId", "type": "int"},
+        |    {"name": "incomeRequestedAt", "type": "long"},
+        |    {"name": "e1ProducedAt", "type": "long"},
         |    {"name": "incomeSource", "type": ["null","string"], "default": null},
-        |    {"name": "isCustomer", "type": ["null","boolean"], "default": null}
+        |    {"name": "isCustomer", "type": "boolean"}
         |  ]
         |}
-      """.stripMargin,
+    """.stripMargin,
     consumerGroupId = "income_prediction_request_consumer"
   ) {
 
     override protected def getSqlInsertStatement(): String = {
       """
-        |INSERT INTO income_predictions (
+        |INSERT INTO income_prediction (
         |  request_id, application_id, customer_id, prospect_id,
-        |  requested_at, income_source, sourceMicroService, is_customer,
-        |   predicted_income, processed_at, sent_to_npl
-        |) VALUES (?, ?, ?, ?, ?, ?, 'income_prediction_request', ?, ?, CURRENT_TIMESTAMP, false)
+        |  income_requested_at, e1_produced_at, income_source, is_customer,
+        |  source_microservice, predicted_income, e1_consumed_at, sent_to_npl
+        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'income_prediction_request', ?, (extract(epoch from current_timestamp) * 1000)::bigint, false)
         |ON CONFLICT (request_id)
         |DO UPDATE SET
         |  predicted_income = EXCLUDED.predicted_income,
-        |  processed_at = CURRENT_TIMESTAMP,
         |  sent_to_npl = false
       """.stripMargin
     }
@@ -74,10 +75,11 @@ object incomePredictionService {
           statement.setString(2, record.applicationId)
           statement.setInt(3, record.customerId)
           statement.setInt(4, record.prospectId)
-          statement.setLong(5, record.requestedAt)
-          statement.setString(6, record.incomeSource)
-          statement.setBoolean(7, record.isCustomer)
-          statement.setDouble(8, record.predictedIncome)
+          statement.setLong(5, record.incomeRequestedAt)
+          statement.setLong(6, record.e1ProducedAt)
+          statement.setString(7, record.incomeSource)
+          statement.setBoolean(8, record.isCustomer)
+          statement.setDouble(9, record.predictedIncome)
         }
       }
     }
@@ -92,7 +94,8 @@ object incomePredictionService {
               applicationId = record.get("applicationId").toString,
               customerId = record.get("customerId").toString.toInt,
               prospectId = prospectId,
-              requestedAt = record.get("requestedAt").toString.toLong,
+              incomeRequestedAt = record.get("incomeRequestedAt").toString.toLong,
+              e1ProducedAt = record.get("e1ProducedAt").toString.toLong,
               incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
               isCustomer = Option(record.get("isCustomer")).exists(_.toString.toBoolean),
               predictedIncome = 50000.0 + (prospectId % 10) * 5000.0
@@ -117,13 +120,15 @@ object incomePredictionService {
                                        applicationId: String,
                                        customerId: Int,
                                        prospectId: Int,
-                                       requestedAt: Long,
+                                       incomeRequestedAt: Long,
+                                       e1ProducedAt: Long,
                                        incomeSource: String,
-                                       sourceMicroService:String,
                                        isCustomer: Boolean,
+                                       sourceMicroService: String,
                                        predictedIncome: Double,
-                                       processedAt: Long,
-                                       sentToNpl: Boolean
+                                       e1ConsumedAt: Long,
+                                       sentToNpl: Boolean,
+                                       e2ProducedAt: Long
                                      ) extends Serializable
 
     /**
@@ -138,13 +143,14 @@ object incomePredictionService {
       override protected def getSelectQuery: String = """
       SELECT
         request_id, application_id, customer_id, prospect_id,
-        requested_at, income_source, sourceMicroService, is_customer,
-        predicted_income, processed_at, sent_to_npl
-      FROM income_predictions
+        income_requested_at, e1_produced_at, income_source,
+        is_customer, source_microservice, predicted_income,
+        e1_consumed_at, sent_to_npl, e2_produced_at
+      FROM income_prediction
       WHERE sent_to_npl = false
-      ORDER BY processed_at ASC
+      ORDER BY e1_consumed_at ASC
     """
-      override protected def getUpdateQuery: Option[String] = Some("UPDATE income_predictions SET sent_to_npl = true WHERE request_id = ?")
+      override protected def getUpdateQuery: Option[String] = Some("UPDATE income_prediction SET sent_to_npl = true, e2_produced_at = (extract(epoch from current_timestamp) * 1000)::bigint WHERE request_id = ?")
       override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] = Some((stmt, record) => stmt.setString(1, record.requestId))
       override protected def getRecordMapper: ResultSet => PredictionResultRecord = rs =>
         PredictionResultRecord(
@@ -152,13 +158,15 @@ object incomePredictionService {
           applicationId = rs.getString("application_id"),
           customerId = rs.getInt("customer_id"),
           prospectId = rs.getInt("prospect_id"),
-          requestedAt = rs.getLong("requested_at"),
+          incomeRequestedAt = rs.getLong("income_requested_at"),
+          e1ProducedAt = rs.getLong("e1_produced_at"),
           incomeSource = rs.getString("income_source"),
-          sourceMicroService = rs.getString("sourceMicroService"),
           isCustomer = rs.getBoolean("is_customer"),
+          sourceMicroService = rs.getString("source_microservice"),
           predictedIncome = rs.getDouble("predicted_income"),
-          processedAt = rs.getTimestamp("processed_at").getTime,
-          sentToNpl = rs.getBoolean("sent_to_npl")
+          e1ConsumedAt = rs.getLong("e1_consumed_at"),
+          sentToNpl = rs.getBoolean("sent_to_npl"),
+          e2ProducedAt = rs.getLong("e2_produced_at")
         )
       override protected def getKafkaTopic: String = "income_prediction_result"
       override protected def getAvroSchema: String = """
@@ -171,13 +179,15 @@ object incomePredictionService {
           {"name": "applicationId", "type": "string"},
           {"name": "customerId", "type": "int"},
           {"name": "prospectId", "type": "int"},
-          {"name": "requestedAt", "type": "long"},
+          {"name": "incomeRequestedAt", "type": "long"},
+          {"name": "e1ProducedAt", "type": "long"},
           {"name": "incomeSource", "type": ["null", "string"]},
-          {"name": "sourceMicroService", "type": "string"},
           {"name": "isCustomer", "type": "boolean"},
+          {"name": "sourceMicroService", "type": "string"},
           {"name": "predictedIncome", "type": "double"},
-          {"name": "processedAt", "type": "long"},
-          {"name": "sentToNpl", "type": "boolean"}
+          {"name": "e1ConsumedAt", "type": "long"},
+          {"name": "sentToNpl", "type": "boolean"},
+          {"name": "e2ProducedAt", "type": "long"}
         ]
       }
     """
@@ -187,13 +197,15 @@ object incomePredictionService {
         avroRecord.put("applicationId", record.applicationId)
         avroRecord.put("customerId", record.customerId)
         avroRecord.put("prospectId", record.prospectId)
-        avroRecord.put("requestedAt", record.requestedAt)
+        avroRecord.put("incomeRequestedAt", record.incomeRequestedAt)
+        avroRecord.put("e1ProducedAt", record.e1ProducedAt)
         avroRecord.put("incomeSource", record.incomeSource)
-        avroRecord.put("sourceMicroService", record.sourceMicroService)
         avroRecord.put("isCustomer", record.isCustomer)
+        avroRecord.put("sourceMicroService", record.sourceMicroService)
         avroRecord.put("predictedIncome", record.predictedIncome)
-        avroRecord.put("processedAt", record.processedAt)
+        avroRecord.put("e1ConsumedAt", record.e1ConsumedAt)
         avroRecord.put("sentToNpl", record.sentToNpl)
+        avroRecord.put("e2ProducedAt", record.e2ProducedAt)
       }
 
       override protected def getKeyExtractor: Option[PredictionResultRecord => Array[Byte]] =
@@ -213,7 +225,6 @@ object incomePredictionService {
       }
 
     }
-
 
   def main(args: Array[String]): Unit = {
     // Create futures for consumer and producer
@@ -238,5 +249,69 @@ object incomePredictionService {
         System.exit(1)
     }
   }
+
+  /*
+def main(args: Array[String]): Unit = {
+
+  new IncomePredictionConsumer().execute()
+}
+
+  try {
+    // Print schema information for debugging
+    println("Starting IncomePredictionConsumer with schema:")
+    val schemaString = """
+                         |{
+                         |  "type": "record",
+                         |  "name": "IncomePredictionRequest",
+                         |  "namespace": "loan",
+                         |  "fields": [
+                         |    {"name": "requestId", "type": "string"},
+                         |    {"name": "applicationId", "type": "string"},
+                         |    {"name": "customerId", "type": "int"},
+                         |    {"name": "prospectId", "type": "int"},
+                         |    {"name": "incomeRequestedAt", "type": "long"},
+                         |    {"name": "e1ProducedAt", "type": "long"},
+                         |    {"name": "incomeSource", "type": ["null","string"], "default": null},
+                         |    {"name": "isCustomer", "type": "boolean"}
+                         |  ]
+                         |}
+  """.stripMargin
+    println(schemaString)
+
+    // Set up a custom consumer with more verbose error handling
+    val consumer = new IncomePredictionConsumer()
+
+    // Add shutdown hook to handle termination gracefully
+    Runtime.getRuntime.addShutdownHook(new Thread() {
+      override def run(): Unit = {
+        println("Shutting down consumer...")
+      }
+    })
+
+    println("Starting consumer execution...")
+    consumer.execute()
+  } catch {
+    case e: Exception =>
+      println(s"Error in consumer: ${e.getMessage}")
+      println("This is likely a schema mismatch between producer and consumer.")
+      println("Please check that the Avro schema used by the producer matches the one defined here.")
+      println("Use a Kafka consumer tool to inspect the actual message format.")
+
+      // Add this to inspect the actual Kafka messages
+      println("\nTrying to read raw messages...")
+      val props = new Properties()
+      props.setProperty("bootstrap.servers", "localhost:9092")
+      props.setProperty("group.id", "schema-debugger")
+      props.setProperty("auto.offset.reset", "earliest")
+
+      println("Use a command line tool like kafka-console-consumer to check the raw messages:")
+      println("kafka-console-consumer --bootstrap-server localhost:9092 --topic income_prediction_request --from-beginning")
+
+      e.printStackTrace()
+      System.exit(1)
+  }
+}
+*/
+
 
 }

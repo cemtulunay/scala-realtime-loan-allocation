@@ -14,8 +14,9 @@ case class predictionRequest(
                                     applicationId: Option[String],
                                     customerId: Option[Int],
                                     prospectId: Option[Int],
-                                    requestedAt: Option[Long],
-                                    incomeSource: String,          // "real-time" for prospects, "batch" for customers
+                                    incomeRequestedAt: Option[Long],
+                                    e1ProducedAt: Option[Long],
+                                    incomeSource: String,                        // "real-time" for prospects, "batch" for customers
                                     isCustomer: Boolean,
                                     predictedIncome: Option[Double]
                                   )
@@ -34,7 +35,7 @@ class predictionRequestGenerator(
     if (running) {
       val event = generateEvent(id)
       ctx.collect(event)
-      ctx.emitWatermark(new Watermark(event.requestedAt.getOrElse(0L)))
+      ctx.emitWatermark(new Watermark(event.incomeRequestedAt.getOrElse(0L)))
       Thread.sleep(sleepMillisPerEvent)
       if (id % 10 == 0) extraDelayInMillisOnEveryTenEvents.foreach(Thread.sleep)
       run(id + 1, ctx)
@@ -52,7 +53,8 @@ class predictionRequestGenerator(
       applicationId = Some(UUID.randomUUID().toString),
       customerId = customerId,
       prospectId = if (!isCustomer) Some(Random.nextInt(999999) + 2000000) else Some(0),
-      requestedAt = if (!isCustomer) Some(baseInstant.plusSeconds(id).toEpochMilli) else Some(oneDayAgo),
+      incomeRequestedAt = if (!isCustomer) Some(baseInstant.plusSeconds(id).toEpochMilli) else Some(oneDayAgo),
+      e1ProducedAt = Some(baseInstant.plusSeconds(id).toEpochMilli),
       incomeSource = if (!isCustomer) "real-time" else "batch",
       isCustomer = isCustomer,
       predictedIncome = if (!isCustomer) Some(0) else Some(50000.0 + (customerId.getOrElse(0) % 10) * 5000.0)
