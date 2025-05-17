@@ -1,4 +1,4 @@
-package loan
+package utils
 
 import generators.{predictionRequest, predictionRequestGenerator}
 import org.apache.avro.generic.GenericRecord

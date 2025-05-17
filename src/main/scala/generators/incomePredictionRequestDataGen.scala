@@ -66,4 +66,5 @@ class predictionRequestGenerator(
   override def cancel(): Unit = {
     running = false
   }
+
 }

@@ -1,4 +1,4 @@
-package loan
+package utils
 
 import org.apache.avro.generic.GenericRecord
 import org.apache.flink.api.common.typeinfo.TypeInformation
@@ -97,7 +97,7 @@ object incomePredictionService {
               incomeRequestedAt = record.get("incomeRequestedAt").toString.toLong,
               e1ProducedAt = record.get("e1ProducedAt").toString.toLong,
               incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
-              isCustomer = Option(record.get("isCustomer")).exists(_.toString.toBoolean),
+              isCustomer = Some(record.get("isCustomer")).exists(_.toString.toBoolean),
               predictedIncome = 50000.0 + (prospectId % 10) * 5000.0
             )
           } catch {
@@ -150,7 +150,8 @@ object incomePredictionService {
       WHERE sent_to_npl = false
       ORDER BY e1_consumed_at ASC
     """
-      override protected def getUpdateQuery: Option[String] = Some("UPDATE income_prediction SET sent_to_npl = true, e2_produced_at = (extract(epoch from current_timestamp) * 1000)::bigint WHERE request_id = ?")
+      val e2_produced_at = System.currentTimeMillis()
+      override protected def getUpdateQuery: Option[String] = Some(s"UPDATE income_prediction SET sent_to_npl = true, e2_produced_at = $e2_produced_at WHERE request_id = ?")
       override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] = Some((stmt, record) => stmt.setString(1, record.requestId))
       override protected def getRecordMapper: ResultSet => PredictionResultRecord = rs =>
         PredictionResultRecord(
@@ -165,8 +166,8 @@ object incomePredictionService {
           sourceMicroService = rs.getString("source_microservice"),
           predictedIncome = rs.getDouble("predicted_income"),
           e1ConsumedAt = rs.getLong("e1_consumed_at"),
-          sentToNpl = rs.getBoolean("sent_to_npl"),
-          e2ProducedAt = rs.getLong("e2_produced_at")
+          sentToNpl = true,
+          e2ProducedAt = e2_produced_at
         )
       override protected def getKafkaTopic: String = "income_prediction_result"
       override protected def getAvroSchema: String = """
