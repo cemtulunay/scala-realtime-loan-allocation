@@ -1,3 +1,146 @@
+==> 20250518 - 1.9.4
+
+-- public.income_prediction definition
+-- Drop table
+-- DROP TABLE public.income_prediction;
+
+CREATE TABLE public.income_prediction (
+request_id varchar(255) NOT NULL,
+application_id varchar(255) NOT NULL,
+customer_id int4 NOT NULL,
+prospect_id int4 NOT NULL,
+income_requested_at int8 NOT NULL,
+system_time int8 NOT NULL,
+e1_produced_at int8 NOT NULL,
+income_source varchar(255) NULL,
+is_customer bool NULL,
+kafka_source varchar(255) NULL,
+predicted_income float8 NULL,
+e1_consumed_at int8 NULL,
+sent_to_npl bool DEFAULT false NULL,
+e2_produced_at int8 NULL,
+CONSTRAINT income_prediction_pkey PRIMARY KEY (request_id)
+);
+
+CREATE INDEX idx_income_not_sent1 ON public.income_prediction USING btree (sent_to_npl) WHERE (sent_to_npl = false);
+
+
+
+-- public.npl_prediction definition
+-- Drop table
+-- DROP TABLE public.npl_prediction;
+
+CREATE TABLE public.npl_prediction (
+request_id varchar(255) NOT NULL,
+application_id varchar(255) NOT NULL,
+customer_id int4 NOT NULL,
+prospect_id int4 NOT NULL,
+income_requested_at int8 NULL,
+system_time int8 NOT NULL,
+e1_produced_at int8 NULL,
+income_source varchar(255) NULL,
+is_customer bool NULL,
+kafka_source varchar(255) NULL,
+predicted_income float8 NULL,
+e1_consumed_at int8 NULL,
+sent_to_npl bool NULL,
+e2_produced_at int8 NULL,
+e2_consumed_at int8 NULL,
+npl_requested_at int8 NULL,
+e3_produced_at int8 NULL,
+e3_consumed_at int8 NULL,
+credit_score  int8 NOT NULL,
+sent_to_ldes bool DEFAULT false NULL,
+e4_produced_at int8 NULL,
+predicted_npl float8 NOT NULL,
+CONSTRAINT npl_prediction_pkey PRIMARY KEY (request_id)
+);
+CREATE INDEX idx_not_sent_to_ldes1 ON public.npl_prediction USING btree (sent_to_ldes) WHERE (sent_to_ldes = false);
+
+
+
+
+
+
+--QUERIES-1
+SELECT
+  request_id,
+  application_id,
+  customer_id,
+  prospect_id,
+  -- Show full precision by applying modulo to get just the milliseconds part
+  to_char(to_timestamp(income_requested_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((income_requested_at % 1000)::text, 3, '0') AS income_requested_time,
+  to_char(to_timestamp(e1_produced_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' ||  lpad((e1_produced_at % 1000)::text, 3, '0') AS e1_produced_time,
+  to_char(to_timestamp(system_time/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' ||  lpad((system_time % 1000)::text, 3, '0') AS system_time,
+  income_source,
+  is_customer,
+  kafka_source,
+  predicted_income,
+  -- For the ones that are already in seconds format
+  to_char(to_timestamp(e1_consumed_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e1_consumed_at % 1000)::text, 3, '0') AS e1_consumed_time,
+  e1_consumed_at,
+  sent_to_npl,
+  to_char(to_timestamp(e2_produced_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e2_produced_at % 1000)::text, 3, '0') AS e2_produced_time,
+  e2_produced_at
+FROM income_prediction
+where 1=1
+and e1_produced_at = (SELECT max(e1_produced_at) FROM income_prediction);
+--and request_id = 'bb291834-b0cf-4382-a449-8d1422e91b58';
+
+
+
+--QUERIES-2
+SELECT
+  request_id,
+  application_id,
+  customer_id,
+  prospect_id,
+  -- Show full precision by applying modulo to get just the milliseconds part
+  to_char(to_timestamp(income_requested_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((income_requested_at % 1000)::text, 3, '0') AS income_requested_time,
+  to_char(to_timestamp(e1_produced_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' ||  lpad((e1_produced_at % 1000)::text, 3, '0') AS e1_produced_time,
+  income_source,
+  is_customer,
+  kafka_source,
+  predicted_income,
+  -- For the ones that are already in seconds format
+  to_char(to_timestamp(e1_consumed_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e1_consumed_at % 1000)::text, 3, '0') AS e1_consumed_time,
+  sent_to_npl,
+  to_char(to_timestamp(e2_produced_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e2_produced_at % 1000)::text, 3, '0') AS e2_produced_time,
+  e2_produced_at,
+  to_char(to_timestamp(e2_consumed_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e2_consumed_at % 1000)::text, 3, '0') AS e2_consumed_time,
+  to_char(to_timestamp(e3_produced_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e3_produced_at % 1000)::text, 3, '0') AS e3_produced_time,
+  to_char(to_timestamp(e3_consumed_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e3_consumed_at % 1000)::text, 3, '0') AS e3_consumed_time,
+  npl_requested_at,
+  to_char(to_timestamp(npl_requested_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((npl_requested_at % 1000)::text, 3, '0') AS npl_requested_time,
+  to_char(to_timestamp(system_time/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' ||  lpad((system_time % 1000)::text, 3, '0') AS system_time,
+  credit_score,
+  sent_to_ldes,
+  to_char(to_timestamp(e4_produced_at/1000), 'YYYY-MM-DD HH24:MI:SS') || '.' || lpad((e4_produced_at % 1000)::text, 3, '0') AS e4_produced_time,
+  predicted_npl
+FROM npl_prediction
+where 1=1
+-- and e1_produced_at = (SELECT max(e1_produced_at) FROM npl_prediction);
+-- and e3_produced_at = (SELECT max(e3_produced_at) FROM npl_prediction);
+-- and e4_produced_at = (SELECT max(e4_produced_at) FROM npl_prediction);
+-- and e4_produced_at = (SELECT max(e4_produced_at) FROM npl_prediction) and is_customer = true;
+and e4_produced_at = (SELECT max(e4_produced_at) FROM npl_prediction where is_customer = false) ;
+--and request_id = '79c83ba4-66f8-4b41-9745-1ef9efd4a95c';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+==> 20250517 - 1.9.3
 -- public.income_prediction definition
 -- Drop table
 DROP TABLE public.income_prediction;

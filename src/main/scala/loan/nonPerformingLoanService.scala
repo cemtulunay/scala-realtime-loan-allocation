@@ -3,17 +3,24 @@ package utils
 import loan.utils.{randomCreditScore, skewedRandom}
 import org.apache.avro.generic.GenericRecord
 import org.apache.flink.api.common.functions.MapFunction
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.connector.jdbc.JdbcStatementBuilder
+import source.AbstractPostgreSQLToKafkaProducer
 import target.StreamConsumer
 
-import java.sql.PreparedStatement
+import java.sql.{PreparedStatement, ResultSet}
+import java.util.Properties
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 
 object nonPerformingLoanService {
 
-  /*********** event2 - Consumer ************/
+
+  /*******************************************************************************/
+  /**************************** event2 - Consumer ********************************/
+  /*******************************************************************************/
+
 
   // Case class for npl prediction record
   case class PredictionResultRecord(
@@ -144,9 +151,10 @@ object nonPerformingLoanService {
   }
 
 
+  /*******************************************************************************/
+  /**************************** event3 - Consumer ********************************/
+  /*******************************************************************************/
 
-
-  /*********** event3 - Consumer ************/
 
   // Case class for npl prediction record
   case class NplPredictionRequestRecord(
@@ -190,7 +198,7 @@ object nonPerformingLoanService {
         |}
     """.stripMargin,
     consumerGroupId = "npl_prediction_request_consumer",
-    printToConsole = true
+    printToConsole = false
   ) {
 
     override protected def getSqlInsertStatement(): String = {
@@ -262,19 +270,187 @@ object nonPerformingLoanService {
     }
   }
 
+
+  /*******************************************************************************/
+  /**************************** event4 - Producer ********************************/
+  /*******************************************************************************/
+
+
+  // Define the case class for the original use case
+  case class NplPredictionResultRecord (
+                                     requestId: String,
+                                     applicationId: String,
+                                     customerId: Int,
+                                     prospectId: Int,
+                                     incomeRequestedAt: Long,
+                                     e1ProducedAt: Long,
+                                     systemTime: Long,
+                                     incomeSource: String,
+                                     isCustomer: Boolean,
+                                     kafkaSource: String,
+                                     predictedIncome: Double,
+                                     e1ConsumedAt: Long,
+                                     sentToNpl: Boolean,
+                                     e2ProducedAt: Long,
+                                     e2ConsumedAt: Long,
+                                     nplRequestedAt: Long,
+                                     e3ProducedAt: Long,
+                                     e3ConsumedAt: Long,
+                                     creditScore: Long,
+                                     sentToLdes: Boolean,
+                                     e4ProducedAt: Long,
+                                     predictedNpl: Double
+                                   ) extends Serializable
+
+  /**
+   * Concrete implementation of AbstractPostgreSQLToKafkaProducer for income prediction results
+   */
+  class NplPredictionResultProducer extends AbstractPostgreSQLToKafkaProducer[NplPredictionResultRecord] {
+
+    override protected def getJobName: String = "NPL Prediction Result Producer"
+    override protected def getJdbcUrl: String = "jdbc:postgresql://localhost:5432/loan_db"
+    override protected def getJdbcUsername: String = "docker"
+    override protected def getJdbcPassword: String = "docker"
+    override protected def getSelectQuery: String = """
+      SELECT
+        request_id, application_id, customer_id, prospect_id,
+        income_requested_at, e1_produced_at, system_time, income_source,
+        is_customer, kafka_source, predicted_income, e1_consumed_at,
+        sent_to_npl, e2_produced_at, e2_consumed_at, npl_requested_at,
+        e3_produced_at, e3_consumed_at, credit_score, sent_to_ldes,
+        predicted_npl
+      FROM npl_prediction
+      WHERE sent_to_ldes = false
+      ORDER BY e2_consumed_at ASC, e3_consumed_at ASC
+      """
+    override protected def getUpdateQuery: Option[String] = Some("UPDATE npl_prediction SET sent_to_ldes = true, e4_produced_at = ? WHERE request_id = ?")
+    override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, NplPredictionResultRecord) => Unit] = Some((stmt, record) => {
+      stmt.setLong(1, record.e4ProducedAt)
+      stmt.setString(2, record.requestId)
+    })
+    override protected def getRecordMapper: ResultSet => NplPredictionResultRecord = rs => {
+      val systemTime2 = System.currentTimeMillis()
+
+      NplPredictionResultRecord(
+        requestId = rs.getString("request_id"),
+        applicationId = rs.getString("application_id"),
+        customerId = rs.getInt("customer_id"),
+        prospectId = rs.getInt("prospect_id"),
+        incomeRequestedAt = rs.getLong("income_requested_at"),
+        e1ProducedAt = rs.getLong("e1_produced_at"),
+        systemTime = rs.getLong("system_time"),
+        incomeSource = rs.getString("income_source"),
+        isCustomer = rs.getBoolean("is_customer"),
+        kafkaSource = rs.getString("kafka_source"),
+        predictedIncome = rs.getDouble("predicted_income"),
+        e1ConsumedAt = rs.getLong("e1_consumed_at"),
+        sentToNpl = rs.getBoolean("sent_to_npl"),
+        e2ProducedAt = rs.getLong("e2_produced_at"),
+        e2ConsumedAt = rs.getLong("e2_consumed_at"),
+        nplRequestedAt = rs.getLong("npl_requested_at"),
+        e3ProducedAt = rs.getLong("e3_produced_at"),
+        e3ConsumedAt = rs.getLong("e3_consumed_at"),
+        creditScore = rs.getLong("credit_score"),
+        sentToLdes =  true,
+        e4ProducedAt = if (rs.getBoolean("is_customer")) rs.getLong("npl_requested_at") + (systemTime2 - rs.getLong("system_time")) else rs.getLong("income_requested_at") + (systemTime2 - rs.getLong("system_time")),
+        predictedNpl = rs.getDouble("predicted_npl"),
+      )
+    }
+    override protected def getKafkaTopic: String = "npl_prediction_result"
+    override protected def getAvroSchema: String = """
+      {
+        "type": "record",
+        "name": "IncomePredictionResult",
+        "namespace": "loan",
+        "fields": [
+          {"name": "requestId", "type": "string"},
+          {"name": "applicationId", "type": "string"},
+          {"name": "customerId", "type": "int"},
+          {"name": "prospectId", "type": "int"},
+          {"name": "incomeRequestedAt", "type": "long"},
+          {"name": "e1ProducedAt", "type": "long"},
+          {"name": "systemTime", "type": "long"},
+          {"name": "incomeSource", "type": ["null", "string"]},
+          {"name": "isCustomer", "type": "boolean"},
+          {"name": "kafkaSource", "type": "string"},
+          {"name": "predictedIncome", "type": "double"},
+          {"name": "e1ConsumedAt", "type": "long"},
+          {"name": "sentToNpl", "type": "boolean"},
+          {"name": "e2ProducedAt", "type": "long"},
+          {"name": "e2ConsumedAt", "type": "long"},
+          {"name": "nplRequestedAt", "type": "long"},
+          {"name": "e3ProducedAt", "type": "long"},
+          {"name": "e3ConsumedAt", "type": "long"},
+          {"name": "creditScore", "type": "long"},
+          {"name": "sentToLdes", "type": "boolean"},
+          {"name": "e4ProducedAt", "type": "long"},
+          {"name": "predictedNpl", "type": "double"}
+        ]
+      }
+    """
+
+    override protected def getToGenericRecord: (NplPredictionResultRecord, GenericRecord) => Unit = (record, avroRecord) => {
+      avroRecord.put("requestId", record.requestId)
+      avroRecord.put("applicationId", record.applicationId)
+      avroRecord.put("customerId", record.customerId)
+      avroRecord.put("prospectId", record.prospectId)
+      avroRecord.put("incomeRequestedAt", record.incomeRequestedAt)
+      avroRecord.put("e1ProducedAt", record.e1ProducedAt)
+      avroRecord.put("systemTime", record.systemTime)
+      avroRecord.put("incomeSource", record.incomeSource)
+      avroRecord.put("isCustomer", record.isCustomer)
+      avroRecord.put("kafkaSource", record.kafkaSource)
+      avroRecord.put("predictedIncome", record.predictedIncome)
+      avroRecord.put("e1ConsumedAt", record.e1ConsumedAt)
+      avroRecord.put("sentToNpl", record.sentToNpl)
+      avroRecord.put("e2ProducedAt", record.e2ProducedAt)
+      avroRecord.put("e2ConsumedAt", record.e2ConsumedAt)
+      avroRecord.put("nplRequestedAt", record.nplRequestedAt)
+      avroRecord.put("e3ProducedAt", record.e3ProducedAt)
+      avroRecord.put("e3ConsumedAt", record.e3ConsumedAt)
+      avroRecord.put("creditScore", record.creditScore)
+      avroRecord.put("sentToLdes", record.sentToLdes)
+      avroRecord.put("e4ProducedAt", record.e4ProducedAt)
+      avroRecord.put("predictedNpl", record.predictedNpl)
+    }
+
+    override protected def getKeyExtractor: Option[NplPredictionResultRecord => Array[Byte]] =
+      Some(record => record.requestId.getBytes())
+
+    override protected def getKafkaProperties: Properties = {
+      val props = new Properties()
+      props.setProperty("bootstrap.servers", "localhost:9092")
+      props.setProperty("transaction.timeout.ms", "5000")
+      props.setProperty("retention.ms", "-1")  // infinite retention
+      props.setProperty("cleanup.policy", "delete")
+      props
+    }
+
+    override protected def getTypeInformation: TypeInformation[NplPredictionResultRecord] = {
+      TypeInformation.of(classOf[NplPredictionResultRecord])
+    }
+
+  }
+
+
   def main(args: Array[String]): Unit = {
     // Create futures for consumer and producer
-    val consumerFuture = Future {
+    val consumerFuture1 = Future {
       new IncomePredictionResultConsumer().execute()
     }
 
-    val producerFuture = Future {
+    val consumerFuture2 = Future {
       // Directly create and execute the producer
       new NplPredictionConsumer().execute()
     }
 
+    val producerFuture1 = Future {
+      // Directly create and execute the producer
+      new NplPredictionResultProducer().execute()
+    }
+
     // Run both processes
-    val combinedFuture = Future.sequence(Seq(consumerFuture, producerFuture))
+    val combinedFuture = Future.sequence(Seq(consumerFuture1, consumerFuture2, producerFuture1))
 
     try {
       Await.result(combinedFuture, Duration.Inf)

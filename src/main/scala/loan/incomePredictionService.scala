@@ -15,7 +15,11 @@ import scala.concurrent.ExecutionContext.Implicits.global
 
 object incomePredictionService {
 
-  /*********** event1 - Consumer ************/
+
+  /*******************************************************************************/
+  /**************************** event1 - Consumer ********************************/
+  /*******************************************************************************/
+
 
   // Case class for income prediction record
   case class PredictionRecord(
@@ -118,7 +122,10 @@ object incomePredictionService {
   }
 
 
-  /*********** event2 - Producer ************/
+  /*******************************************************************************/
+  /**************************** event2 - Producer ********************************/
+  /*******************************************************************************/
+
 
     // Define the case class for the original use case
     case class PredictionResultRecord(
