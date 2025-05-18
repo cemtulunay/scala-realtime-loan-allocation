@@ -25,6 +25,7 @@ object incomePredictionService {
                                prospectId: Int,
                                incomeRequestedAt: Long,
                                e1ProducedAt: Long,
+                               systemTime: Long,
                                incomeSource: String,
                                isCustomer: Boolean,
                                predictedIncome: Double
@@ -46,6 +47,7 @@ object incomePredictionService {
         |    {"name": "prospectId", "type": "int"},
         |    {"name": "incomeRequestedAt", "type": "long"},
         |    {"name": "e1ProducedAt", "type": "long"},
+        |    {"name": "systemTime", "type": "long"},
         |    {"name": "incomeSource", "type": ["null","string"], "default": null},
         |    {"name": "isCustomer", "type": "boolean"}
         |  ]
@@ -58,12 +60,13 @@ object incomePredictionService {
       """
         |INSERT INTO income_prediction (
         |  request_id, application_id, customer_id, prospect_id,
-        |  income_requested_at, e1_produced_at, income_source, is_customer,
-        |  source_microservice, predicted_income, e1_consumed_at, sent_to_npl
-        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'income_prediction_request', ?, (extract(epoch from current_timestamp) * 1000)::bigint, false)
+        |  income_requested_at, e1_produced_at, system_time, income_source, is_customer,
+        |  kafka_source, predicted_income, e1_consumed_at, sent_to_npl
+        |) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'income_prediction_request', ?, ?, false)
         |ON CONFLICT (request_id)
         |DO UPDATE SET
         |  predicted_income = EXCLUDED.predicted_income,
+        |  e1_consumed_at = EXCLUDED.income_requested_at + (extract(epoch from current_timestamp) * 1000)::bigint - EXCLUDED.system_time,
         |  sent_to_npl = false
       """.stripMargin
     }
@@ -77,9 +80,11 @@ object incomePredictionService {
           statement.setInt(4, record.prospectId)
           statement.setLong(5, record.incomeRequestedAt)
           statement.setLong(6, record.e1ProducedAt)
-          statement.setString(7, record.incomeSource)
-          statement.setBoolean(8, record.isCustomer)
-          statement.setDouble(9, record.predictedIncome)
+          statement.setLong(7, record.systemTime)
+          statement.setString(8, record.incomeSource)
+          statement.setBoolean(9, record.isCustomer)
+          statement.setDouble(10, record.predictedIncome)
+          statement.setLong(11, record.incomeRequestedAt + (System.currentTimeMillis() - record.systemTime))
         }
       }
     }
@@ -96,6 +101,7 @@ object incomePredictionService {
               prospectId = prospectId,
               incomeRequestedAt = record.get("incomeRequestedAt").toString.toLong,
               e1ProducedAt = record.get("e1ProducedAt").toString.toLong,
+              systemTime = record.get("systemTime").toString.toLong,
               incomeSource = Option(record.get("incomeSource")).map(_.toString).orNull,
               isCustomer = Some(record.get("isCustomer")).exists(_.toString.toBoolean),
               predictedIncome = 50000.0 + (prospectId % 10) * 5000.0
@@ -122,9 +128,10 @@ object incomePredictionService {
                                        prospectId: Int,
                                        incomeRequestedAt: Long,
                                        e1ProducedAt: Long,
+                                       systemTime: Long,
                                        incomeSource: String,
                                        isCustomer: Boolean,
-                                       sourceMicroService: String,
+                                       kafkaSource: String,
                                        predictedIncome: Double,
                                        e1ConsumedAt: Long,
                                        sentToNpl: Boolean,
@@ -143,17 +150,21 @@ object incomePredictionService {
       override protected def getSelectQuery: String = """
       SELECT
         request_id, application_id, customer_id, prospect_id,
-        income_requested_at, e1_produced_at, income_source,
-        is_customer, source_microservice, predicted_income,
-        e1_consumed_at, sent_to_npl, e2_produced_at
+        income_requested_at, e1_produced_at, system_time, income_source,
+        is_customer, kafka_source, predicted_income,
+        e1_consumed_at, sent_to_npl
       FROM income_prediction
       WHERE sent_to_npl = false
       ORDER BY e1_consumed_at ASC
-    """
-      val e2_produced_at = System.currentTimeMillis()
-      override protected def getUpdateQuery: Option[String] = Some(s"UPDATE income_prediction SET sent_to_npl = true, e2_produced_at = $e2_produced_at WHERE request_id = ?")
-      override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] = Some((stmt, record) => stmt.setString(1, record.requestId))
-      override protected def getRecordMapper: ResultSet => PredictionResultRecord = rs =>
+      """
+      override protected def getUpdateQuery: Option[String] = Some("UPDATE income_prediction SET sent_to_npl = true, e2_produced_at = ? WHERE request_id = ?")
+      override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, PredictionResultRecord) => Unit] = Some((stmt, record) => {
+        stmt.setLong(1, record.e2ProducedAt)
+        stmt.setString(2, record.requestId)
+      })
+      override protected def getRecordMapper: ResultSet => PredictionResultRecord = rs => {
+        val systemTime2 = System.currentTimeMillis()
+
         PredictionResultRecord(
           requestId = rs.getString("request_id"),
           applicationId = rs.getString("application_id"),
@@ -161,14 +172,16 @@ object incomePredictionService {
           prospectId = rs.getInt("prospect_id"),
           incomeRequestedAt = rs.getLong("income_requested_at"),
           e1ProducedAt = rs.getLong("e1_produced_at"),
+          systemTime = rs.getLong("system_time"),
           incomeSource = rs.getString("income_source"),
           isCustomer = rs.getBoolean("is_customer"),
-          sourceMicroService = rs.getString("source_microservice"),
+          kafkaSource = rs.getString("kafka_source"),
           predictedIncome = rs.getDouble("predicted_income"),
           e1ConsumedAt = rs.getLong("e1_consumed_at"),
           sentToNpl = true,
-          e2ProducedAt = e2_produced_at
+          e2ProducedAt = rs.getLong("income_requested_at") + (systemTime2 - rs.getLong("system_time"))
         )
+      }
       override protected def getKafkaTopic: String = "income_prediction_result"
       override protected def getAvroSchema: String = """
       {
@@ -182,9 +195,10 @@ object incomePredictionService {
           {"name": "prospectId", "type": "int"},
           {"name": "incomeRequestedAt", "type": "long"},
           {"name": "e1ProducedAt", "type": "long"},
+          {"name": "systemTime", "type": "long"},
           {"name": "incomeSource", "type": ["null", "string"]},
           {"name": "isCustomer", "type": "boolean"},
-          {"name": "sourceMicroService", "type": "string"},
+          {"name": "kafkaSource", "type": "string"},
           {"name": "predictedIncome", "type": "double"},
           {"name": "e1ConsumedAt", "type": "long"},
           {"name": "sentToNpl", "type": "boolean"},
@@ -200,9 +214,10 @@ object incomePredictionService {
         avroRecord.put("prospectId", record.prospectId)
         avroRecord.put("incomeRequestedAt", record.incomeRequestedAt)
         avroRecord.put("e1ProducedAt", record.e1ProducedAt)
+        avroRecord.put("systemTime", record.systemTime)
         avroRecord.put("incomeSource", record.incomeSource)
         avroRecord.put("isCustomer", record.isCustomer)
-        avroRecord.put("sourceMicroService", record.sourceMicroService)
+        avroRecord.put("kafkaSource", record.kafkaSource)
         avroRecord.put("predictedIncome", record.predictedIncome)
         avroRecord.put("e1ConsumedAt", record.e1ConsumedAt)
         avroRecord.put("sentToNpl", record.sentToNpl)

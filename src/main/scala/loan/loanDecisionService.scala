@@ -28,6 +28,7 @@ object loanDecisionService {
       |    {"name": "prospectId", "type": "int"},
       |    {"name": "incomeRequestedAt", "type": "long"},
       |    {"name": "e1ProducedAt", "type": "long"},
+      |    {"name": "systemTime", "type": "long"},
       |    {"name": "incomeSource", "type": ["null","string"], "default": null},
       |    {"name": "isCustomer", "type": "boolean"}
       |  ]
@@ -51,6 +52,7 @@ object loanDecisionService {
       record.put("prospectId", element.prospectId.getOrElse(0))
       record.put("incomeRequestedAt", element.incomeRequestedAt.getOrElse(0L))
       record.put("e1ProducedAt", element.e1ProducedAt.getOrElse(0L))
+      record.put("systemTime", element.systemTime.getOrElse(0L))
       record.put("incomeSource", element.incomeSource)
       record.put("isCustomer", element.isCustomer)
     }
@@ -70,10 +72,14 @@ object loanDecisionService {
       |    {"name": "customerId", "type": "int"},
       |    {"name": "prospectId", "type": "int"},
       |    {"name": "incomeRequestedAt", "type": "long"},
-      |    {"name": "e1ProducedAt", "type": "long"},
+      |    {"name": "nplRequestedAt", "type": "long"},
+      |    {"name": "e3ProducedAt", "type": "long"},
+      |    {"name": "systemTime", "type": "long"},
       |    {"name": "incomeSource", "type": ["null","string"], "default": null},
-      |    {"name": "isCustomer", "type": "boolean"}
+      |    {"name": "isCustomer", "type": "boolean"},
       |    {"name": "predictedIncome", "type": "double"}
+      |
+      |
       |  ]
       |}
     """.stripMargin
@@ -94,7 +100,9 @@ object loanDecisionService {
       record.put("customerId", element.customerId.getOrElse(0))
       record.put("prospectId", element.prospectId.getOrElse(0))
       record.put("incomeRequestedAt", element.incomeRequestedAt.getOrElse(0L))
-      record.put("e1ProducedAt", element.e1ProducedAt.getOrElse(0L))
+      record.put("nplRequestedAt", element.nplRequestedAt.getOrElse(0L))
+      record.put("e3ProducedAt", element.nplRequestedAt.getOrElse(0L))
+      record.put("systemTime", element.systemTime.getOrElse(0L))
       record.put("incomeSource", element.incomeSource)
       record.put("isCustomer", element.isCustomer)
       record.put("predictedIncome", element.predictedIncome.getOrElse(0))
