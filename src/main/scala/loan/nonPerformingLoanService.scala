@@ -360,7 +360,7 @@ object nonPerformingLoanService {
     override protected def getAvroSchema: String = """
       {
         "type": "record",
-        "name": "IncomePredictionResult",
+        "name": "NplPredictionResult",
         "namespace": "loan",
         "fields": [
           {"name": "requestId", "type": "string"},
@@ -431,6 +431,11 @@ object nonPerformingLoanService {
     }
 
   }
+
+
+  /*******************************************************************************/
+  /******************************** EXECUTION ************************************/
+  /*******************************************************************************/
 
 
   def main(args: Array[String]): Unit = {

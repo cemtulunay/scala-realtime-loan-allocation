@@ -249,6 +249,11 @@ object incomePredictionService {
 
     }
 
+  /*******************************************************************************/
+  /******************************** EXECUTION ************************************/
+  /*******************************************************************************/
+
+
   def main(args: Array[String]): Unit = {
     // Create futures for consumer and producer
     val consumerFuture = Future {
