@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # Analytics Infrastructure
+  influxdb:
+    image: influxdb:2.0
+    container_name: influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      # Initial setup
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin123
+      DOCKER_INFLUXDB_INIT_ORG: loan-org
+      DOCKER_INFLUXDB_INIT_BUCKET: loan-analytics
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: loan-analytics-token
+
+      # Additional settings
+      INFLUXDB_DB: loan_analytics
+      INFLUXDB_HTTP_AUTH_ENABLED: false
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    networks:
+      - loan-network
+
+  # Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Admin credentials
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+      # InfluxDB datasource auto-provisioning
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - influxdb
+    networks:
+      - loan-network
+
+  # Optional: InfluxDB CLI for debugging
+  influx-cli:
+    image: influxdb:2.0
+    container_name: influx-cli
+    entrypoint: ["tail", "-f", "/dev/null"]
+    environment:
+      INFLUX_HOST: http://influxdb:8086
+      INFLUX_ORG: loan-org
+      INFLUX_TOKEN: loan-analytics-token
+    depends_on:
+      - influxdb
+    networks:
+      - loan-network
+
+volumes:
+  postgres_data:
+  influxdb_data:
+  influxdb_config:
+  grafana_data:
+
+networks:
+  loan-network:
+    driver: bridge
