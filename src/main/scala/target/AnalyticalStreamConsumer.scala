@@ -2,64 +2,215 @@ package target
 
 import org.apache.avro.Schema
 import org.apache.avro.generic.GenericRecord
-import org.apache.flink.api.common.functions.{MapFunction}
-import org.apache.flink.streaming.api.datastream.DataStream
+import org.apache.flink.api.common.functions.{AggregateFunction, MapFunction}
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
+import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows
+import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
-import org.apache.flink.configuration.Configuration
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction
 import serializer.{GenericAvroDeserializer, GenericRecordKryoSerializer}
-
-// InfluxDB imports
-import com.influxdb.client.{InfluxDBClient, InfluxDBClientFactory, WriteApi}
-import com.influxdb.client.write.Point
-import com.influxdb.client.domain.WritePrecision
+import org.apache.flink.streaming.api.functions.sink.SinkFunction
+import org.apache.flink.streaming.api.scala._
+import org.apache.flink.api.scala.createTypeInformation
 
 import java.util.Properties
-import java.time.Instant
+
+/**
+ * Case class representing loan decision analytics data
+ */
+case class LoanAnalytics(
+                          timestamp: Long,
+                          isApproved: Boolean,
+                          loanAmount: Double,
+                          riskScore: Double,
+                          processingTime: Long
+                        ) extends Serializable
+
+/**
+ * Case class for aggregated analytics
+ */
+case class AggregatedLoanAnalytics(
+                                    windowStart: Long,
+                                    windowEnd: Long,
+                                    approvedCount: Long,
+                                    rejectedCount: Long,
+                                    approvalRate: Double,
+                                    totalAmount: Double,
+                                    avgAmount: Double,
+                                    avgRiskScore: Double,
+                                    highRiskCount: Long,
+                                    avgProcTime: Double
+                                  ) extends Serializable
+
+/**
+ * Aggregate function for loan analytics
+ */
+class LoanAnalyticsAggregateFunction extends AggregateFunction[LoanAnalytics, LoanAnalyticsAccumulator, AggregatedLoanAnalytics] {
+
+  override def createAccumulator(): LoanAnalyticsAccumulator = LoanAnalyticsAccumulator()
+
+  override def add(value: LoanAnalytics, accumulator: LoanAnalyticsAccumulator): LoanAnalyticsAccumulator = {
+    accumulator.copy(
+      count = accumulator.count + 1,
+      approvedCount = accumulator.approvedCount + (if (value.isApproved) 1 else 0),
+      rejectedCount = accumulator.rejectedCount + (if (!value.isApproved) 1 else 0),
+      totalAmount = accumulator.totalAmount + value.loanAmount,
+      totalRiskScore = accumulator.totalRiskScore + value.riskScore,
+      highRiskCount = accumulator.highRiskCount + (if (value.riskScore > 0.7) 1 else 0),
+      totalProcTime = accumulator.totalProcTime + value.processingTime,
+      windowStart = if (accumulator.windowStart == 0) value.timestamp else math.min(accumulator.windowStart, value.timestamp),
+      windowEnd = math.max(accumulator.windowEnd, value.timestamp)
+    )
+  }
+
+  override def getResult(accumulator: LoanAnalyticsAccumulator): AggregatedLoanAnalytics = {
+    val totalCount = accumulator.count
+    AggregatedLoanAnalytics(
+      windowStart = accumulator.windowStart,
+      windowEnd = accumulator.windowEnd,
+      approvedCount = accumulator.approvedCount,
+      rejectedCount = accumulator.rejectedCount,
+      approvalRate = if (totalCount > 0) accumulator.approvedCount.toDouble / totalCount else 0.0,
+      totalAmount = accumulator.totalAmount,
+      avgAmount = if (accumulator.approvedCount > 0) accumulator.totalAmount / accumulator.approvedCount else 0.0,
+      avgRiskScore = if (totalCount > 0) accumulator.totalRiskScore / totalCount else 0.0,
+      highRiskCount = accumulator.highRiskCount,
+      avgProcTime = if (totalCount > 0) accumulator.totalProcTime / totalCount else 0.0
+    )
+  }
+
+  override def merge(a: LoanAnalyticsAccumulator, b: LoanAnalyticsAccumulator): LoanAnalyticsAccumulator = {
+    a.copy(
+      count = a.count + b.count,
+      approvedCount = a.approvedCount + b.approvedCount,
+      rejectedCount = a.rejectedCount + b.rejectedCount,
+      totalAmount = a.totalAmount + b.totalAmount,
+      totalRiskScore = a.totalRiskScore + b.totalRiskScore,
+      highRiskCount = a.highRiskCount + b.highRiskCount,
+      totalProcTime = a.totalProcTime + b.totalProcTime,
+      windowStart = if (a.windowStart == 0) b.windowStart else if (b.windowStart == 0) a.windowStart else math.min(a.windowStart, b.windowStart),
+      windowEnd = math.max(a.windowEnd, b.windowEnd)
+    )
+  }
+}
+
+/**
+ * Accumulator for loan analytics aggregation
+ */
+case class LoanAnalyticsAccumulator(
+                                     count: Long = 0,
+                                     approvedCount: Long = 0,
+                                     rejectedCount: Long = 0,
+                                     totalAmount: Double = 0.0,
+                                     totalRiskScore: Double = 0.0,
+                                     highRiskCount: Long = 0,
+                                     totalProcTime: Long = 0,
+                                     windowStart: Long = 0,
+                                     windowEnd: Long = 0
+                                   ) extends Serializable
+
+/**
+ * Simple InfluxDB sink for writing aggregated analytics
+ */
+class InfluxDBSink(
+                    influxUrl: String = "http://localhost:8086",
+                    database: String = "loan-analytics",
+                    username: String = "admin",
+                    password: String = "admin"
+                  ) extends SinkFunction[AggregatedLoanAnalytics] {
+
+  import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+  import java.net.URI
+
+  @transient private var httpClient: HttpClient = _
+
+  private val org = "loan-org"
+  private val token = "loan-analytics-token"
+  private val bucket = "loan-analytics"
+
+  private def initializeClient(): Unit = {
+    if (httpClient == null) {
+      httpClient = HttpClient.newHttpClient()
+      println(s"Initialized InfluxDB client for bucket: $bucket, org: $org")
+    }
+  }
+
+  override def invoke(value: AggregatedLoanAnalytics, context: SinkFunction.Context): Unit = {
+    initializeClient()
+
+    try {
+      val timestamp = value.windowEnd * 1000000
+      val lineProtocol = s"loan_decisions," +
+        s"window_type=tumbling " +
+        s"approved_count=${value.approvedCount}i," +
+        s"rejected_count=${value.rejectedCount}i," +
+        s"approval_rate=${value.approvalRate}," +
+        s"total_amount=${value.totalAmount}," +
+        s"avg_amount=${value.avgAmount}," +
+        s"avg_risk_score=${value.avgRiskScore}," +
+        s"high_risk_count=${value.highRiskCount}i," +
+        s"avg_proc_time=${value.avgProcTime}," +
+        s"window_start=${value.windowStart}i," +
+        s"window_end=${value.windowEnd}i " +
+        s"$timestamp"
+
+      val writeUrl = s"$influxUrl/api/v2/write?org=$org&bucket=$bucket&precision=ns"
+
+      val request = HttpRequest.newBuilder()
+        .uri(URI.create(writeUrl))
+        .header("Authorization", s"Token $token")
+        .header("Content-Type", "text/plain")
+        .POST(HttpRequest.BodyPublishers.ofString(lineProtocol))
+        .build()
+
+      val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+
+      if (response.statusCode() >= 200 && response.statusCode() < 300) {
+        println(s"✅ Successfully wrote analytics to InfluxDB: approved=${value.approvedCount}, rejected=${value.rejectedCount}, rate=${(value.approvalRate * 100).round}%")
+      } else {
+        println(s"❌ InfluxDB write failed with status: ${response.statusCode()}, body: ${response.body()}")
+        println(s"   URL: $writeUrl")
+        println(s"   Token: $token")
+        println(s"   Org: $org, Bucket: $bucket")
+
+        val timeStr = java.time.Instant.ofEpochMilli(value.windowEnd)
+        println(s"📊 Analytics Data ($timeStr):")
+        println(s"   ✅ Approved: ${value.approvedCount}, ❌ Rejected: ${value.rejectedCount}")
+        println(s"   📈 Approval Rate: ${(value.approvalRate * 100).round}%")
+        println(s"   💰 Avg Amount: $${value.avgAmount.round}")
+        println(s"   📝 Line Protocol: $lineProtocol")
+      }
+
+    } catch {
+      case e: Exception =>
+        println(s"❌ Error writing to InfluxDB: ${e.getMessage}")
+        println(s"📊 Analytics Data: approved=${value.approvedCount}, rejected=${value.rejectedCount}")
+    }
+  }
+}
 
 /**
  * A generalized abstract class for Flink-based Kafka consumers that read data from a Kafka topic
- * and save it to InfluxDB for real-time analytics. This class handles the common pipeline setup
- * for consuming, processing, and storing time-series data.
- *
- * @param topicName Name of the Kafka topic to consume from
- * @param schemaString Avro schema for deserializing Kafka messages
- * @param bootstrapServers Kafka server addresses (comma-separated)
- * @param consumerGroupId Identifier for the consumer group
- * @param influxUrl InfluxDB connection URL
- * @param influxToken Authentication token for InfluxDB
- * @param influxOrg Organization name in InfluxDB
- * @param influxBucket Bucket name in InfluxDB
- * @param measurement InfluxDB measurement name (equivalent to table)
- * @param batchSize Number of points to batch before writing to InfluxDB
- * @param flushIntervalMs Maximum time (ms) to wait before flushing batch
- * @param checkpointingIntervalMs Interval (ms) between state checkpoints
- * @param autoOffsetReset Strategy for offset when none exists (latest/earliest)
- * @param enableAutoCommit Whether to auto-commit offsets to Kafka
- * @tparam T The target domain object type (must be Serializable)
+ * and perform analytical aggregations, then write the results to InfluxDB.
  */
-abstract class AnalyticalStreamConsumer[T <: Serializable](
-                                                            topicName: String,
-                                                            schemaString: String,
-                                                            bootstrapServers: String = "localhost:9092",
-                                                            consumerGroupId: String,
-                                                            influxUrl: String = "http://localhost:8086",
-                                                            influxToken: String = "loan-analytics-token",
-                                                            influxOrg: String = "loan-org",
-                                                            influxBucket: String = "loan-analytics",
-                                                            measurement: String,
-                                                            batchSize: Int = 1000,
-                                                            flushIntervalMs: Int = 1000,
-                                                            checkpointingIntervalMs: Int = 10000,
-                                                            autoOffsetReset: String = "latest",
-                                                            enableAutoCommit: String = "false",
-                                                            printToConsole: Boolean = false
-                                                          ) {
+abstract class LoanAnalyticalStreamConsumer[T <: Serializable](
+                                                                topicName: String,
+                                                                schemaString: String,
+                                                                bootstrapServers: String = "localhost:9092",
+                                                                consumerGroupId: String,
+                                                                windowSizeSeconds: Int = 5,
+                                                                influxUrl: String = "http://localhost:8086",
+                                                                influxDatabase: String = "loan_analytics",
+                                                                influxUsername: String = "admin",
+                                                                influxPassword: String = "admin",
+                                                                checkpointingIntervalMs: Int = 10000,
+                                                                autoOffsetReset: String = "latest",
+                                                                enableAutoCommit: String = "false",
+                                                                printToConsole: Boolean = true
+                                                              ) {
 
   protected val schema: Schema = new Schema.Parser().parse(schemaString)
 
-  // 1-) Configure Kafka properties
   protected def createKafkaProperties(): Properties = {
     val kafkaProps = new Properties()
     kafkaProps.setProperty("bootstrap.servers", bootstrapServers)
@@ -69,117 +220,54 @@ abstract class AnalyticalStreamConsumer[T <: Serializable](
     kafkaProps
   }
 
-  // 2-) Create a Kafka consumer with generic Avro deserializer
   protected def createKafkaConsumer(): FlinkKafkaConsumer[GenericRecord] = {
     val consumer = new FlinkKafkaConsumer[GenericRecord](
       topicName,
       new GenericAvroDeserializer(schema),
       createKafkaProperties()
     )
-    consumer.setStartFromEarliest()
+    consumer.setStartFromLatest()
     consumer
   }
 
-  // 3-) Map GenericRecord to domain object
   protected def createRecordMapper(): MapFunction[GenericRecord, T]
+  protected def convertToAnalytics(record: T): LoanAnalytics
+  protected implicit def getTypeInformation: TypeInformation[T]
 
-  // 4-) Convert domain object to InfluxDB Point (with tags and fields)
-  protected def convertToInfluxPoint(record: T): Point
-
-  // 5-) Create the main data stream - this is what was missing in your analytics service!
-  protected def createMainDataStream(env: StreamExecutionEnvironment): DataStream[T] = {
-    env.addSource(createKafkaConsumer())
-      .map(createRecordMapper())
-      .name(s"${topicName}_analytical_stream")
-  }
-
-  // 6-) Override this for custom stream processing (optional)
-  protected def createCustomDataStream(env: StreamExecutionEnvironment): Unit = {
-    // Default implementation just writes to InfluxDB
-    val stream = createMainDataStream(env)
-
-    if (printToConsole) {
-      stream.print()
-    }
-
-    stream.addSink(new InfluxDBSink())
-  }
-
-  // 7-) InfluxDB Sink Implementation
-  class InfluxDBSink extends RichSinkFunction[T] {
-    private var influxClient: InfluxDBClient = _
-    private var writeApi: WriteApi = _
-
-    override def open(parameters: Configuration): Unit = {
-      super.open(parameters)
-      influxClient = InfluxDBClientFactory.create(influxUrl, influxToken.toCharArray, influxOrg, influxBucket)
-      writeApi = influxClient.getWriteApi
-    }
-
-    override def invoke(record: T, context: org.apache.flink.streaming.api.functions.sink.SinkFunction.Context): Unit = {
-      try {
-        val point = convertToInfluxPoint(record)
-        writeApi.writePoint(point)
-      } catch {
-        case e: Exception =>
-          println(s"Error writing to InfluxDB: ${e.getMessage}")
-          e.printStackTrace()
-          throw e
-      }
-    }
-
-    override def close(): Unit = {
-      if (writeApi != null) {
-        writeApi.close()
-      }
-      if (influxClient != null) {
-        influxClient.close()
-      }
-      super.close()
-    }
-  }
-
-  // 8-) Execute the stream processing job
   def execute(): Unit = {
-    // 8.1-) Setup Flink environment
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-
-    // Enable checkpointing for reliability
     env.enableCheckpointing(checkpointingIntervalMs)
-
-    // Register custom Kryo serializer
     env.getConfig.addDefaultKryoSerializer(
       classOf[GenericRecord],
       classOf[GenericRecordKryoSerializer]
     )
 
-    // 8.2-) Create and execute custom data stream processing
-    createCustomDataStream(env)
+    implicit val loanAnalyticsTypeInfo: TypeInformation[LoanAnalytics] = createTypeInformation[LoanAnalytics]
+    implicit val aggregatedTypeInfo: TypeInformation[AggregatedLoanAnalytics] = createTypeInformation[AggregatedLoanAnalytics]
+    implicit val stringTypeInfo: TypeInformation[String] = createTypeInformation[String]
 
-    // 8.3-) Execute job
+    val stream = env.addSource(createKafkaConsumer())
+    val recordMapper = createRecordMapper()
+
+    val processedStream = stream
+      .map(recordMapper)
+      .map((record: T) => convertToAnalytics(record))
+
+    if (printToConsole) {
+      processedStream.print()
+    }
+
+    val keyedStream = processedStream.keyBy((_: LoanAnalytics) => "all")
+    val windowedStream = keyedStream.window(TumblingProcessingTimeWindows.of(Time.seconds(windowSizeSeconds)))
+    val aggregatedStream = windowedStream.aggregate(new LoanAnalyticsAggregateFunction())
+
+    if (printToConsole) {
+      aggregatedStream.print()
+    }
+
+    val influxSink = new InfluxDBSink(influxUrl, influxDatabase, influxUsername, influxPassword)
+    aggregatedStream.addSink(influxSink)
+
     env.execute(s"Analytical Stream Consumer for $topicName")
-  }
-}
-
-// Companion object with utility methods
-object AnalyticalStreamConsumer {
-
-  // Helper method to create common tags for InfluxDB points
-  def addCommonTags(point: Point, customerId: Int, applicationId: String): Point = {
-    point
-      .addTag("customer_id", customerId.toString)
-      .addTag("application_id", applicationId)
-      .addTag("environment", "development") // or get from config
-  }
-
-  // Helper method to extract timestamp from various sources
-  def extractTimestamp(systemTime: Option[Long], eventTime: Option[Long]): Instant = {
-    val timestamp = eventTime.orElse(systemTime).getOrElse(System.currentTimeMillis())
-    Instant.ofEpochMilli(timestamp)
-  }
-
-  // Helper method for time-based field calculations
-  def calculateElapsedTime(startTime: Long, endTime: Long = System.currentTimeMillis()): Long = {
-    endTime - startTime
   }
 }

@@ -151,6 +151,33 @@ object utils {
       }
     }
 
+    def calculateLoanAmount(debtToIncomeRatio: Double, incomePrediction: Double): Double = {
+      // Calculate base potential amount (income divided by debt ratio)
+      val basePotential = if (debtToIncomeRatio > 0) incomePrediction / debtToIncomeRatio else incomePrediction * 2
+
+      // Apply a percentage factor between 50% and 90% based on debt ratio
+      // Lower debt ratio leads to higher percentage of potential amount
+      val percentageFactor = {
+        if (debtToIncomeRatio < 0.3) {
+          // Low debt ratio (good) - higher percentage (80-90%)
+          0.8 + (Random.nextDouble() * 0.1)
+        } else if (debtToIncomeRatio < 0.5) {
+          // Moderate debt ratio - medium percentage (65-80%)
+          0.65 + (Random.nextDouble() * 0.15)
+        } else {
+          // High debt ratio - lower percentage (50-65%)
+          0.5 + (Random.nextDouble() * 0.15)
+        }
+      }
+
+      // Calculate raw amount
+      val rawAmount = basePotential * percentageFactor
+
+      // Round to nearest $100
+      val roundedAmount = Math.round(rawAmount / 100.0) * 100.0
+      roundedAmount
+    }
+
   }
 
 

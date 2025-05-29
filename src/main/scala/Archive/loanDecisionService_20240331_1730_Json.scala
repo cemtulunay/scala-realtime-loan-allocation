@@ -1,3 +1,5 @@
+package Archive
+
 //package loan
 //
 //import generators.{predictionRequest, predictionRequestGenerator}

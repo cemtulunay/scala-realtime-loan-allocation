@@ -9,6 +9,8 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SESSION_TIMEOUT_MS: 30000  # Increase from 18000
+      ZOOKEEPER_CONNECTION_TIMEOUT_MS: 10000
 
   kafka:
     image: confluentinc/cp-kafka:6.2.0

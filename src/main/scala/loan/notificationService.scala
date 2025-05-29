@@ -1,238 +1,259 @@
 package utils
 
+import org.apache.avro.Schema
 import org.apache.avro.generic.GenericRecord
-import org.apache.flink.api.common.functions.MapFunction
+import org.apache.flink.api.common.functions.{AggregateFunction, MapFunction}
+import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.scala.createTypeInformation
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import target.AnalyticalStreamConsumer
-import com.influxdb.client.write.Point
-import com.influxdb.client.domain.WritePrecision
-import org.json4s._
-import org.json4s.jackson.Serialization.write
-import java.time.Instant
-import scala.concurrent.ExecutionContext.Implicits.{global => globalEc}
+import org.apache.flink.streaming.api.functions.sink.SinkFunction
+import org.apache.flink.streaming.api.scala._
+import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows
+import org.apache.flink.streaming.api.windowing.time.Time
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
+import serializer.{GenericAvroDeserializer, GenericRecordKryoSerializer}
+import target.{AggregatedLoanAnalytics, InfluxDBSink, LoanAnalytics, LoanAnalyticsAggregateFunction}
+
+import java.net.URI
+import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.nio.charset.StandardCharsets
+import java.util.{Base64, Properties}
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 
-object notificationService {
+// Case class for loan decision notification record
+case class LoanDecisionNotificationAnalyticsRecord(
+                                                    requestId: String,
+                                                    applicationId: String,
+                                                    customerId: Int,
+                                                    incomeRequestedAt: Long,
+                                                    systemTime: Long,
+                                                    isCustomer: Boolean,
+                                                    nplRequestedAt: Long,
+                                                    creditScore: Long,
+                                                    predictedNpl: Double,
+                                                    debtToIncomeRatio: Double,
+                                                    loanDecision: Boolean,
+                                                    loanAmount: Double,
+                                                    e5ProducedAt: Long
+                                                  ) extends Serializable
 
-  implicit val formats: DefaultFormats.type = DefaultFormats
-
-  /** **************************************************************************** */
-  /** **************** Event 5 - Notification Analytics (InfluxDB) ************* */
-
-  /** **************************************************************************** */
-
-  case class NotificationRecord(
-                                 requestId: String,
-                                 applicationId: String,
-                                 customerId: Int,
-                                 loanDecision: Boolean,
-                                 loanAmount: Double,
-                                 riskScore: Double,
-                                 creditScore: Long,
-                                 processingTimeMs: Long,
-                                 eventTime: Long
-                               ) extends Serializable
-
-  class NotificationAnalyticalConsumer extends AnalyticalStreamConsumer[NotificationRecord](
-    topicName = "loan_decision_result",
-    schemaString =
-      """
-        |{
-        |  "type": "record",
-        |  "name": "LoanDecisionResult",
-        |  "namespace": "loan",
-        |  "fields": [
-        |    {"name": "requestId", "type": "string"},
-        |    {"name": "applicationId", "type": "string"},
-        |    {"name": "customerId", "type": "int"},
-        |    {"name": "prospectId", "type": "int"},
-        |    {"name": "incomeRequestedAt", "type": "long"},
-        |    {"name": "e1ProducedAt", "type": "long"},
-        |    {"name": "systemTime", "type": "long"},
-        |    {"name": "incomeSource", "type": ["null", "string"]},
-        |    {"name": "isCustomer", "type": "boolean"},
-        |    {"name": "kafkaSource", "type": "string"},
-        |    {"name": "predictedIncome", "type": "double"},
-        |    {"name": "e1ConsumedAt", "type": "long"},
-        |    {"name": "sentToNpl", "type": "boolean"},
-        |    {"name": "e2ProducedAt", "type": "long"},
-        |    {"name": "e2ConsumedAt", "type": "long"},
-        |    {"name": "nplRequestedAt", "type": "long"},
-        |    {"name": "e3ProducedAt", "type": "long"},
-        |    {"name": "e3ConsumedAt", "type": "long"},
-        |    {"name": "creditScore", "type": "long"},
-        |    {"name": "sentToLdes", "type": "boolean"},
-        |    {"name": "e4ProducedAt", "type": "long"},
-        |    {"name": "predictedNpl", "type": "double"},
-        |    {"name": "debtToIncomeRatio", "type": "double"},
-        |    {"name": "employmentIndustry", "type": "string"},
-        |    {"name": "employmentStability", "type": "double"},
-        |    {"name": "loanDecision", "type": "boolean"},
-        |    {"name": "loanAmount", "type": "double"},
-        |    {"name": "e5ProducedAt", "type": "long"}
-        |  ]
-        |}
-      """.stripMargin,
-    consumerGroupId = "notification_analytical_consumer",
-    measurement = "notification_events"
-  ) {
-
-    override protected def createRecordMapper(): MapFunction[GenericRecord, NotificationRecord] = {
-      new MapFunction[GenericRecord, NotificationRecord] {
-        override def map(record: GenericRecord): NotificationRecord = {
-          try {
-            val currentTime = System.currentTimeMillis()
-            val systemTime = record.get("systemTime").toString.toLong
-            val processingTime = currentTime - systemTime
-
-            // Calculate risk score
-            val predictedNpl = record.get("predictedNpl").toString.toDouble
-            val debtToIncomeRatio = record.get("debtToIncomeRatio").toString.toDouble
-            val creditScore = record.get("creditScore").toString.toLong
-            val riskScore = (predictedNpl * 0.4) + (debtToIncomeRatio * 0.3) + ((1000 - creditScore) / 1000.0 * 0.3)
-
-            NotificationRecord(
-              requestId = record.get("requestId").toString,
-              applicationId = record.get("applicationId").toString,
-              customerId = record.get("customerId").toString.toInt,
-              loanDecision = Option(record.get("loanDecision")).exists(_.toString.toBoolean),
-              loanAmount = record.get("loanAmount").toString.toDouble,
-              riskScore = riskScore,
-              creditScore = creditScore,
-              processingTimeMs = processingTime,
-              eventTime = currentTime
-            )
-          } catch {
-            case e: Exception =>
-              println(s"Error processing notification record: ${e.getMessage}")
-              e.printStackTrace()
-              throw e
-          }
-        }
-      }
-    }
-
-    override protected def convertToInfluxPoint(record: NotificationRecord): Point = {
-      AnalyticalStreamConsumer.addCommonTags(
-        Point.measurement("notification_events")
-          .time(Instant.ofEpochMilli(record.eventTime), WritePrecision.MS)
-          .addTag("loan_decision", record.loanDecision.toString)
-          .addTag("risk_category", if (record.riskScore > 0.7) "HIGH" else if (record.riskScore > 0.4) "MEDIUM" else "LOW")
-          .addField("loan_amount", record.loanAmount)
-          .addField("risk_score", record.riskScore)
-          .addField("credit_score", record.creditScore.toDouble)
-          .addField("processing_time_ms", record.processingTimeMs.toDouble),
-        record.customerId,
-        record.applicationId
-      )
-    }
-
-    override protected def createCustomDataStream(env: StreamExecutionEnvironment): Unit = {
-      val rawStream = createMainDataStream(env)
-
-      // Simple implementation - just write raw events to InfluxDB
-      rawStream.addSink(new InfluxDBSink())
-
-      // Simple aggregation without windowing - process each record individually
-      val analyticsStream = rawStream
-        .map(record => {
-          // Create analytics for each notification record
-          Map(
-            "measurement" -> "notification_analytics",
-            "total_notifications" -> 1L,
-            "approved_count" -> (if (record.loanDecision) 1L else 0L),
-            "approval_rate" -> (if (record.loanDecision) 1.0 else 0.0),
-            "avg_risk_score" -> record.riskScore,
-            "avg_processing_time" -> record.processingTimeMs.toDouble,
-            "customer_id" -> record.customerId,
-            "timestamp" -> record.eventTime
-          )
-        })
-
-      // Send individual analytics to InfluxDB
-      analyticsStream
-        .map(analytics => write(analytics))
-        .addSink(new NotificationAnalyticsSink())
-    }
-  }
-
-
-  /*******************************************************************************/
-  /********************** Analytics Sink Implementations ***********************/
-  /*******************************************************************************/
-
-
-  class NotificationAnalyticsSink extends org.apache.flink.streaming.api.functions.sink.SinkFunction[String] {
-    override def invoke(value: String, context: org.apache.flink.streaming.api.functions.sink.SinkFunction.Context): Unit = {
-      sendToInfluxDB(value, "notification_analytics")
-    }
-  }
-
-  private def sendToInfluxDB(data: String, measurement: String): Unit = {
+// Separate mapper class to avoid serialization issues
+class LoanDecisionRecordMapper extends MapFunction[GenericRecord, LoanDecisionNotificationAnalyticsRecord] with Serializable {
+  override def map(record: GenericRecord): LoanDecisionNotificationAnalyticsRecord = {
     try {
-      import com.influxdb.client.InfluxDBClientFactory
-      import com.influxdb.client.write.Point
-      import com.influxdb.client.domain.WritePrecision
-      import org.json4s.jackson.JsonMethods._
+      println(s"Analytics Consumer - Processing record: ${record.toString}")
 
-      implicit val formats: DefaultFormats.type = DefaultFormats
-
-      val json = parse(data)
-      val timestamp = Instant.now()
-
-      val influxDB = InfluxDBClientFactory.create(
-        "http://localhost:8086",
-        "loan-analytics-token".toCharArray,
-        "loan-org",
-        "loan-analytics"
+      LoanDecisionNotificationAnalyticsRecord(
+        requestId = record.get("requestId").toString,
+        applicationId = record.get("applicationId").toString,
+        customerId = record.get("customerId").toString.toInt,
+        incomeRequestedAt = Option(record.get("incomeRequestedAt")).map(_.toString.toLong).getOrElse(0L),
+        systemTime = record.get("systemTime").toString.toLong,
+        isCustomer = record.get("isCustomer").toString.toBoolean,
+        nplRequestedAt = Option(record.get("nplRequestedAt")).map(_.toString.toLong).getOrElse(0L),
+        creditScore = record.get("creditScore").toString.toLong,
+        predictedNpl = record.get("predictedNpl").toString.toDouble,
+        debtToIncomeRatio = record.get("debtToIncomeRatio").toString.toDouble,
+        loanDecision = record.get("loanDecision").toString.toBoolean,
+        loanAmount = record.get("loanAmount").toString.toDouble,
+        e5ProducedAt = Option(record.get("e5ProducedAt")).map(_.toString.toLong).getOrElse(0L)
       )
-
-      val point = Point.measurement(measurement)
-        .time(timestamp, WritePrecision.MS)
-
-      // Add all fields from JSON as InfluxDB fields
-      json.values.asInstanceOf[Map[String, Any]].foreach {
-        case (key, value: Number) => point.addField(key, value.doubleValue())
-        case (key, value: String) if key != "measurement" =>
-          point.addTag(key, value)
-        case _ => // Skip non-numeric fields and measurement
-      }
-
-      val writeApi = influxDB.getWriteApi
-      writeApi.writePoint(point)
-      writeApi.close()
-      influxDB.close()
-
-      println(s"Successfully wrote analytics data to InfluxDB measurement: $measurement")
-
     } catch {
       case e: Exception =>
-        println(s"Error sending analytics to InfluxDB: ${e.getMessage}")
+        println(s"Analytics Consumer - Error processing record: ${e.getMessage}")
         e.printStackTrace()
+        throw e
     }
   }
+}
 
+// Analytics mapper to avoid lambda capture issues
+class LoanDecisionAnalyticsMapper extends MapFunction[LoanDecisionNotificationAnalyticsRecord, LoanAnalytics] with Serializable {
+  override def map(record: LoanDecisionNotificationAnalyticsRecord): LoanAnalytics = {
+    val currentTime = System.currentTimeMillis()
+
+    // Calculate processing time
+    val processingTime = if (record.isCustomer && record.nplRequestedAt > 0) {
+      currentTime - record.nplRequestedAt
+    } else if (record.incomeRequestedAt > 0) {
+      currentTime - record.incomeRequestedAt
+    } else {
+      currentTime - record.systemTime
+    }
+
+    println(s"Converting to analytics - Request: ${record.requestId}, Decision: ${record.loanDecision}, Amount: ${record.loanAmount}, Risk: ${record.predictedNpl}, ProcTime: $processingTime")
+
+    LoanAnalytics(
+      timestamp = currentTime,
+      isApproved = record.loanDecision,
+      loanAmount = if (record.loanDecision) record.loanAmount else 0.0,
+      riskScore = record.predictedNpl,
+      processingTime = processingTime
+    )
+  }
+}
+
+// Standalone analytics consumer that doesn't extend abstract class
+class LoanDecisionAnalyticsConsumer extends Serializable {
+
+  val topicName = "loan_decision_result_notification"
+  val consumerGroupId = "loan_decision_analytics_consumer"
+  val windowSizeSeconds = 1
+  val influxDatabase = "loan_analytics"
+  val printToConsole = true
+  val bootstrapServers = "localhost:9092"
+  val checkpointingIntervalMs = 10000
+  val autoOffsetReset = "latest"
+  val enableAutoCommit = "false"
+  val influxUrl = "http://localhost:8086"
+  val influxUsername = "admin"
+  val influxPassword = "admin123"
+
+  val schemaString = notificationService.SCHEMA_STRING_LOAN_DECISION_NOTIFICATION
+  @transient lazy val schema: Schema = new Schema.Parser().parse(schemaString)
+
+  // Configure Kafka properties
+  def createKafkaProperties(): Properties = {
+    val kafkaProps = new Properties()
+    kafkaProps.setProperty("bootstrap.servers", bootstrapServers)
+    kafkaProps.setProperty("group.id", consumerGroupId)
+    kafkaProps.setProperty("auto.offset.reset", autoOffsetReset)
+    kafkaProps.setProperty("enable.auto.commit", enableAutoCommit)
+    kafkaProps
+  }
+
+  // Create a Kafka consumer with generic Avro deserializer
+  def createKafkaConsumer(): FlinkKafkaConsumer[GenericRecord] = {
+    val consumer = new FlinkKafkaConsumer[GenericRecord](
+      topicName,
+      new GenericAvroDeserializer(schema),
+      createKafkaProperties()
+    )
+    consumer.setStartFromLatest()
+    consumer
+  }
+
+  // Execute the stream processing
+  def execute(): Unit = {
+    // Setup Flink environment
+    val env = StreamExecutionEnvironment.getExecutionEnvironment
+
+    // Enable checkpointing for reliability
+    env.enableCheckpointing(checkpointingIntervalMs)
+
+    // Register custom Kryo serializer
+    env.getConfig.addDefaultKryoSerializer(
+      classOf[GenericRecord],
+      classOf[GenericRecordKryoSerializer]
+    )
+
+    // Implicit type information
+    implicit val recordTypeInfo: TypeInformation[LoanDecisionNotificationAnalyticsRecord] = createTypeInformation[LoanDecisionNotificationAnalyticsRecord]
+    implicit val loanAnalyticsTypeInfo: TypeInformation[LoanAnalytics] = createTypeInformation[LoanAnalytics]
+    implicit val aggregatedTypeInfo: TypeInformation[AggregatedLoanAnalytics] = createTypeInformation[AggregatedLoanAnalytics]
+    implicit val stringTypeInfo: TypeInformation[String] = createTypeInformation[String]
+
+    // Create source stream
+    val stream = env.addSource(createKafkaConsumer())
+
+    // Process the records - use explicit mapper instances
+    val recordMapper = new LoanDecisionRecordMapper()
+    val analyticsMapper = new LoanDecisionAnalyticsMapper()
+
+    val processedStream = stream
+      .map(recordMapper)
+      .map(analyticsMapper)
+
+    if (printToConsole) {
+      processedStream.print()
+    }
+
+    // Apply windowing and aggregation
+    val keyedStream = processedStream.keyBy((_: LoanAnalytics) => "all")
+    val windowedStream = keyedStream.window(TumblingProcessingTimeWindows.of(Time.seconds(windowSizeSeconds)))
+    val aggregatedStream = windowedStream.aggregate(new LoanAnalyticsAggregateFunction())
+
+    if (printToConsole) {
+      aggregatedStream.print()
+    }
+
+    // Sink to InfluxDB
+    val influxSink = new InfluxDBSink(influxUrl, influxDatabase, influxUsername, influxPassword)
+    aggregatedStream.addSink(influxSink)
+
+    // Execute job
+    env.execute(s"Analytical Stream Consumer for $topicName")
+  }
+}
+
+class notificationService extends Serializable {
 
   /*******************************************************************************/
   /******************************** EXECUTION ************************************/
   /*******************************************************************************/
 
+  // Execute method to run the analytics consumer
+  def execute(): Unit = {
+    println("Starting Loan Decision Analytics Service...")
 
-  def main(args: Array[String]): Unit = {
-    // Create futures for analytics consumers
-    val notificationAnalyticsFuture = Future {
-      new NotificationAnalyticalConsumer().execute()
-    }(globalEc)
+    val analyticsConsumerFuture = Future {
+      try {
+        println("Initializing LoanDecisionAnalyticsConsumer...")
+        val consumer = new LoanDecisionAnalyticsConsumer()
+        println("Starting analytics consumer execution...")
+        consumer.execute()
+      } catch {
+        case e: Exception =>
+          println(s"Error in analytics consumer: ${e.getMessage}")
+          e.printStackTrace()
+          throw e
+      }
+    }
 
     try {
-      Await.result(notificationAnalyticsFuture, Duration.Inf)
+      println("Waiting for analytics consumer to complete...")
+      Await.result(analyticsConsumerFuture, Duration.Inf)
     } catch {
       case e: Exception =>
-        println(s"Error in analytics processes: ${e.getMessage}")
+        println(s"Error in notification service: ${e.getMessage}")
         e.printStackTrace()
         System.exit(1)
     }
   }
+}
 
+object notificationService {
+
+  // Avro schema for loan decision notification
+  val SCHEMA_STRING_LOAN_DECISION_NOTIFICATION =
+    """
+      |{
+      |  "type": "record",
+      |  "name": "LoanDecisionResultNotification",
+      |  "namespace": "loan",
+      |  "fields": [
+      |    {"name": "requestId", "type": "string"},
+      |    {"name": "applicationId", "type": "string"},
+      |    {"name": "customerId", "type": "int"},
+      |    {"name": "incomeRequestedAt", "type": ["null", "long"], "default": null},
+      |    {"name": "systemTime", "type": "long"},
+      |    {"name": "isCustomer", "type": "boolean"},
+      |    {"name": "nplRequestedAt", "type": ["null", "long"], "default": null},
+      |    {"name": "creditScore", "type": "long"},
+      |    {"name": "predictedNpl", "type": "double"},
+      |    {"name": "debtToIncomeRatio", "type": "double"},
+      |    {"name": "loanDecision", "type": "boolean"},
+      |    {"name": "loanAmount", "type": "double"},
+      |    {"name": "e5ProducedAt", "type": ["null", "long"], "default": null}
+      |  ]
+      |}
+    """.stripMargin
+
+  // Main method to run the analytics service
+  def main(args: Array[String]): Unit = {
+    val service = new notificationService()
+    service.execute()
+  }
 }

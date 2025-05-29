@@ -28,6 +28,7 @@ class GenericPostgreSQLSource[T](
                                   updateQuery: Option[String] = None,
                                   updateQueryParamSetter: Option[(PreparedStatement, T) => Unit] = None,
                                   pollingInterval: Long = 100,
+                                  printToConsole: Boolean = false,
                                   private val typeInfo: TypeInformation[T]
                                 ) extends SourceFunction[T] with ResultTypeQueryable[T] with Serializable {
 
@@ -51,8 +52,12 @@ class GenericPostgreSQLSource[T](
 
         while (resultSet.next()) {
           val record = recordMapper(resultSet)
-          ctx.collect(record)
 
+          if (printToConsole) {
+            println(s"Retrieved record: $record")
+          }
+
+          ctx.collect(record)
           // Update the record if an update query is provided
           (updateQuery, updateQueryParamSetter) match {
             case (Some(uQuery), Some(paramSetter)) => updateRecord(uQuery, record, paramSetter)

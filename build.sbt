@@ -35,11 +35,6 @@ val analyticsDependencies = Seq(
   "org.apache.flink" %% "flink-connector-elasticsearch7" % flinkVersion,
   "org.elasticsearch.client" % "elasticsearch-rest-high-level-client" % elasticsearchVersion,
 
-  // WebSocket support for real-time dashboards (optional)
-  "com.typesafe.akka" %% "akka-http" % "10.2.7",
-  "com.typesafe.akka" %% "akka-stream" % "2.6.17",
-  "com.typesafe.akka" %% "akka-actor-typed" % "2.6.17",
-
   // Metrics (only include ones that exist)
   "org.apache.flink" % "flink-metrics-dropwizard" % flinkVersion,
 
@@ -58,13 +53,6 @@ val logging = Seq(
   "ch.qos.logback" % "logback-classic" % logbackVersion
 )
 
-// Testing dependencies
-val testDependencies = Seq(
-  "org.scalatest" %% "scalatest" % "3.2.10" % Test,
-  "org.apache.flink" % "flink-test-utils_2.12" % flinkVersion % Test,
-  "org.testcontainers" % "testcontainers" % "1.16.2" % Test,
-  "org.testcontainers" % "postgresql" % "1.16.2" % Test,
-  "org.testcontainers" % "kafka" % "1.16.2" % Test
-)
 
-libraryDependencies ++= flinkDependencies ++ flinkConnectors ++ analyticsDependencies ++ logging ++ testDependencies
+
+libraryDependencies ++= flinkDependencies ++ flinkConnectors ++ analyticsDependencies ++ logging

@@ -1,3 +1,5 @@
+package Archive
+
 //package loan
 //
 //import generators.{predictionRequest, predictionRequestGenerator}
@@ -16,7 +18,7 @@
 //import java.util.Properties
 //
 //
-//object loanDecisionService_20240402_2100_Avro {
+//object loanDecisionService_20240331_1427_Avro {
 //
 //  // Create Avro schema for incomePredictionRequest
 //  val SCHEMA_STRING =
@@ -43,7 +45,7 @@
 //  class AvroKafkaSerializationSchema extends KafkaSerializationSchema[predictionRequest] {
 //    override def serialize(element: predictionRequest, timestamp: java.lang.Long): ProducerRecord[Array[Byte], Array[Byte]] = {
 //      val byteArrayOutputStream = new ByteArrayOutputStream()
-//      val encoder = EncoderFactory.get().blockingBinaryEncoder(byteArrayOutputStream, null)
+//      val encoder = EncoderFactory.get().binaryEncoder(byteArrayOutputStream, null)
 //
 //      // Since incomePredictionRequest is not an Avro SpecificRecord, we use GenericDatumWriter
 //      val writer = new GenericDatumWriter[GenericRecord](SCHEMA)
@@ -70,6 +72,7 @@
 //        null,                         // key
 //        avroBytes                     // values
 //      )
+//
 //    }
 //  }
 //
@@ -84,7 +87,6 @@
 //    )
 //    val eventsPerRequest: KeyedStream[predictionRequest, String] =
 //      incomePredictionRequestEvents.keyBy(_.customerId.getOrElse(0).toString)
-//      //incomePredictionRequestEvents.keyBy(_.customerId)
 //
 //    /** ****************************************************************************************************************************************************
 //     *  STATEFUL APPROACH - State Primitives - ValueState - Distributed Available
