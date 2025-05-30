@@ -1,5 +1,7 @@
 package loan
 
+import org.apache.flink.api.common.functions.AggregateFunction
+
 import scala.util.Random
 
 object utils {
@@ -178,6 +180,96 @@ object utils {
       roundedAmount
     }
 
+  }
+
+
+  /*******************************************************************************/
+  /********** Loan Disbursement Service - Realtime Analytics Functions ***********/
+  /*******************************************************************************/
+
+
+  // Your existing case classes remain the same
+  case class LoanAnalytics(
+                            timestamp: Long,
+                            isApproved: Boolean,
+                            loanAmount: Double,
+                            riskScore: Double,
+                            processingTime: Long
+                          ) extends Serializable
+
+  case class AggregatedLoanAnalytics(
+                                      windowStart: Long,
+                                      windowEnd: Long,
+                                      approvedCount: Long,
+                                      rejectedCount: Long,
+                                      approvalRate: Double,
+                                      totalAmount: Double,
+                                      avgAmount: Double,
+                                      avgRiskScore: Double,
+                                      highRiskCount: Long,
+                                      avgProcTime: Double
+                                    ) extends Serializable
+
+  case class LoanAnalyticsAccumulator(
+                                       count: Long = 0,
+                                       approvedCount: Long = 0,
+                                       rejectedCount: Long = 0,
+                                       totalAmount: Double = 0.0,
+                                       totalRiskScore: Double = 0.0,
+                                       highRiskCount: Long = 0,
+                                       totalProcTime: Long = 0,
+                                       windowStart: Long = 0,
+                                       windowEnd: Long = 0
+                                     ) extends Serializable
+
+  // Your existing aggregate function remains the same
+  class LoanAnalyticsAggregateFunction extends AggregateFunction[LoanAnalytics, LoanAnalyticsAccumulator, AggregatedLoanAnalytics] {
+
+    override def createAccumulator(): LoanAnalyticsAccumulator = LoanAnalyticsAccumulator()
+
+    override def add(value: LoanAnalytics, accumulator: LoanAnalyticsAccumulator): LoanAnalyticsAccumulator = {
+      accumulator.copy(
+        count = accumulator.count + 1,
+        approvedCount = accumulator.approvedCount + (if (value.isApproved) 1 else 0),
+        rejectedCount = accumulator.rejectedCount + (if (!value.isApproved) 1 else 0),
+        totalAmount = accumulator.totalAmount + value.loanAmount,
+        totalRiskScore = accumulator.totalRiskScore + value.riskScore,
+        highRiskCount = accumulator.highRiskCount + (if (value.riskScore > 0.7) 1 else 0),
+        totalProcTime = accumulator.totalProcTime + value.processingTime,
+        windowStart = if (accumulator.windowStart == 0) value.timestamp else math.min(accumulator.windowStart, value.timestamp),
+        windowEnd = math.max(accumulator.windowEnd, value.timestamp)
+      )
+    }
+
+    override def getResult(accumulator: LoanAnalyticsAccumulator): AggregatedLoanAnalytics = {
+      val totalCount = accumulator.count
+      AggregatedLoanAnalytics(
+        windowStart = accumulator.windowStart,
+        windowEnd = accumulator.windowEnd,
+        approvedCount = accumulator.approvedCount,
+        rejectedCount = accumulator.rejectedCount,
+        approvalRate = if (totalCount > 0) accumulator.approvedCount.toDouble / totalCount else 0.0,
+        totalAmount = accumulator.totalAmount,
+        avgAmount = if (accumulator.approvedCount > 0) accumulator.totalAmount / accumulator.approvedCount else 0.0,
+        avgRiskScore = if (totalCount > 0) accumulator.totalRiskScore / totalCount else 0.0,
+        highRiskCount = accumulator.highRiskCount,
+        avgProcTime = if (totalCount > 0) accumulator.totalProcTime / totalCount else 0.0
+      )
+    }
+
+    override def merge(a: LoanAnalyticsAccumulator, b: LoanAnalyticsAccumulator): LoanAnalyticsAccumulator = {
+      a.copy(
+        count = a.count + b.count,
+        approvedCount = a.approvedCount + b.approvedCount,
+        rejectedCount = a.rejectedCount + b.rejectedCount,
+        totalAmount = a.totalAmount + b.totalAmount,
+        totalRiskScore = a.totalRiskScore + b.totalRiskScore,
+        highRiskCount = a.highRiskCount + b.highRiskCount,
+        totalProcTime = a.totalProcTime + b.totalProcTime,
+        windowStart = if (a.windowStart == 0) b.windowStart else if (b.windowStart == 0) a.windowStart else math.min(a.windowStart, b.windowStart),
+        windowEnd = math.max(a.windowEnd, b.windowEnd)
+      )
+    }
   }
 
 

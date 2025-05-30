@@ -12,30 +12,38 @@ import serializer.{GenericAvroDeserializer, GenericRecordKryoSerializer}
 import org.apache.flink.streaming.api.functions.sink.SinkFunction
 import org.apache.flink.streaming.api.scala._
 import org.apache.flink.api.scala.createTypeInformation
-import utils.{AggregatedLoanAnalytics, InfluxDBSink, LoanAnalytics, LoanAnalyticsAggregateFunction}
 
 import java.util.Properties
 
-
 /**
- * A generalized abstract class for Flink-based Kafka consumers that read data from a Kafka topic
- * and perform analytical aggregations, then write the results to InfluxDB.
+ * A fully generic abstract class for Flink-based Kafka consumers that read data from a Kafka topic,
+ * perform analytical aggregations, and write the results to a sink.
+ *
+ * @param topicName Name of the Kafka topic to consume from
+ * @param schemaString Avro schema for deserializing Kafka messages
+ * @param bootstrapServers Kafka server addresses (comma-separated)
+ * @param consumerGroupId Identifier for the consumer group
+ * @param windowSizeSeconds Size of the tumbling window in seconds
+ * @param checkpointingIntervalMs Interval (ms) between state checkpoints
+ * @param autoOffsetReset Strategy for offset when none exists (latest/earliest)
+ * @param enableAutoCommit Whether to auto-commit offsets to Kafka
+ * @param printToConsole Whether to print processed data to console for debugging
+ * @tparam T The domain record type (must be Serializable)
+ * @tparam A The analytics type that records are converted to (must be Serializable)
+ * @tparam R The aggregated result type (must be Serializable)
+ * @tparam ACC The accumulator type used for aggregation (must be Serializable)
  */
-abstract class LoanAnalyticalStreamConsumer[T <: Serializable](
-                                                                topicName: String,
-                                                                schemaString: String,
-                                                                bootstrapServers: String = "localhost:9092",
-                                                                consumerGroupId: String,
-                                                                windowSizeSeconds: Int = 5,
-                                                                influxUrl: String = "http://localhost:8086",
-                                                                influxDatabase: String = "loan_analytics",
-                                                                influxUsername: String = "admin",
-                                                                influxPassword: String = "admin",
-                                                                checkpointingIntervalMs: Int = 10000,
-                                                                autoOffsetReset: String = "latest",
-                                                                enableAutoCommit: String = "false",
-                                                                printToConsole: Boolean = true
-                                                              ) {
+abstract class AnalyticalStreamConsumer[T <: Serializable, A <: Serializable, R <: Serializable, ACC <: Serializable](
+                                                                                                                       topicName: String,
+                                                                                                                       schemaString: String,
+                                                                                                                       bootstrapServers: String = "localhost:9092",
+                                                                                                                       consumerGroupId: String,
+                                                                                                                       windowSizeSeconds: Int = 5,
+                                                                                                                       checkpointingIntervalMs: Int = 10000,
+                                                                                                                       autoOffsetReset: String = "latest",
+                                                                                                                       enableAutoCommit: String = "false",
+                                                                                                                       printToConsole: Boolean = true
+                                                                                                                     ) {
 
   protected val schema: Schema = new Schema.Parser().parse(schemaString)
 
@@ -58,9 +66,16 @@ abstract class LoanAnalyticalStreamConsumer[T <: Serializable](
     consumer
   }
 
+  // Abstract methods that must be implemented by concrete classes
   protected def createRecordMapper(): MapFunction[GenericRecord, T]
-  protected def convertToAnalytics(record: T): LoanAnalytics
-  protected implicit def getTypeInformation: TypeInformation[T]
+  protected def createAnalyticsMapper(): MapFunction[T, A]
+  protected def createAggregateFunction(): AggregateFunction[A, ACC, R]
+  protected def createSink(): SinkFunction[R]
+
+  // Type information methods
+  protected implicit def getRecordTypeInformation: TypeInformation[T]
+  protected implicit def getAnalyticsTypeInformation: TypeInformation[A]
+  protected implicit def getResultTypeInformation: TypeInformation[R]
 
   def execute(): Unit = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
@@ -70,31 +85,31 @@ abstract class LoanAnalyticalStreamConsumer[T <: Serializable](
       classOf[GenericRecordKryoSerializer]
     )
 
-    implicit val loanAnalyticsTypeInfo: TypeInformation[LoanAnalytics] = createTypeInformation[LoanAnalytics]
-    implicit val aggregatedTypeInfo: TypeInformation[AggregatedLoanAnalytics] = createTypeInformation[AggregatedLoanAnalytics]
     implicit val stringTypeInfo: TypeInformation[String] = createTypeInformation[String]
 
     val stream = env.addSource(createKafkaConsumer())
     val recordMapper = createRecordMapper()
+    val analyticsMapper = createAnalyticsMapper()
 
     val processedStream = stream
       .map(recordMapper)
-      .map((record: T) => convertToAnalytics(record))
+      .map(analyticsMapper)
 
     if (printToConsole) {
       processedStream.print()
     }
 
-    val keyedStream = processedStream.keyBy((_: LoanAnalytics) => "all")
-    val windowedStream = keyedStream.window(TumblingProcessingTimeWindows.of(Time.seconds(windowSizeSeconds)))
-    val aggregatedStream = windowedStream.aggregate(new LoanAnalyticsAggregateFunction())
+    // Use asInstanceOf to work around Flink's type variance issues
+    val keyedStream = processedStream.keyBy((_: A) => "all")
+    val windowAssigner = TumblingProcessingTimeWindows.of(Time.seconds(windowSizeSeconds))
+    val windowedStream = keyedStream.window(windowAssigner.asInstanceOf[org.apache.flink.streaming.api.windowing.assigners.WindowAssigner[A, org.apache.flink.streaming.api.windowing.windows.TimeWindow]])
+    val aggregatedStream = windowedStream.aggregate(createAggregateFunction())
 
     if (printToConsole) {
       aggregatedStream.print()
     }
 
-    val influxSink = new InfluxDBSink(influxUrl, influxDatabase, influxUsername, influxPassword)
-    aggregatedStream.addSink(influxSink)
+    aggregatedStream.addSink(createSink())
 
     env.execute(s"Analytical Stream Consumer for $topicName")
   }
