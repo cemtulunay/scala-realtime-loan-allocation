@@ -70,7 +70,8 @@ abstract class AnalyticalStreamConsumer[T <: Serializable, A <: Serializable, R 
   protected def createRecordMapper(): MapFunction[GenericRecord, T]
   protected def createAnalyticsMapper(): MapFunction[T, A]
   protected def createAggregateFunction(): AggregateFunction[A, ACC, R]
-  protected def createSink(): SinkFunction[R]
+  // InfluxDB sink is optional in order to use this class with notifications instead of realtime analytics as well
+  protected def createSink(): Option[SinkFunction[R]] = None
 
   // Type information methods
   protected implicit def getRecordTypeInformation: TypeInformation[T]
@@ -109,7 +110,9 @@ abstract class AnalyticalStreamConsumer[T <: Serializable, A <: Serializable, R 
       aggregatedStream.print()
     }
 
-    aggregatedStream.addSink(createSink())
+    // aggregatedStream.addSink(createSink())
+    // InfluxDB sink is optional
+    createSink().foreach(sink => aggregatedStream.addSink(sink))
 
     env.execute(s"Analytical Stream Consumer for $topicName")
   }

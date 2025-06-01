@@ -329,12 +329,12 @@ object loanDecisionService {
 
 
   /*******************************************************************************/
-  /**************************** event5 - Producer ********************************/
+  /**************************** event6 - Producer ********************************/
   /*******************************************************************************/
 
 
   // Define the case class for the original use case
-  case class LoanDecisionNotificationRecord (
+  case class LoanDecisionDisbursementRecord (
                                          requestId: String,
                                          applicationId: String,
                                          customerId: Int,
@@ -353,7 +353,7 @@ object loanDecisionService {
   /**
    * Concrete implementation of AbstractPostgreSQLToKafkaProducer for income prediction results
    */
-  class NplPredictionResultProducer extends AbstractPostgreSQLToKafkaProducer[LoanDecisionNotificationRecord] {
+  class NplPredictionResultProducer extends AbstractPostgreSQLToKafkaProducer[LoanDecisionDisbursementRecord] {
 
     override protected def getJobName: String = "Loan Decision Producer"
     override protected def getJdbcUrl: String = "jdbc:postgresql://localhost:5432/loan_db"
@@ -370,14 +370,14 @@ object loanDecisionService {
       ORDER BY e4_consumed_at ASC
       """
     override protected def getUpdateQuery: Option[String] = Some("UPDATE loan_result SET sent_to_ldes = true, e5_produced_at = ? WHERE request_id = ?")
-    override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, LoanDecisionNotificationRecord) => Unit] = Some((stmt, record) => {
+    override protected def getUpdateQueryParamSetter: Option[(PreparedStatement, LoanDecisionDisbursementRecord) => Unit] = Some((stmt, record) => {
       stmt.setLong(1, record.e5ProducedAt)
       stmt.setString(2, record.requestId)
     })
-    override protected def getRecordMapper: ResultSet => LoanDecisionNotificationRecord = rs => {
+    override protected def getRecordMapper: ResultSet => LoanDecisionDisbursementRecord = rs => {
       val systemTime2 = System.currentTimeMillis()
 
-      LoanDecisionNotificationRecord(
+      LoanDecisionDisbursementRecord(
         requestId = rs.getString("request_id"),
         applicationId = rs.getString("application_id"),
         customerId = if (rs.getBoolean("is_customer")) rs.getInt("customer_id") else rs.getInt("prospect_id"),
@@ -393,11 +393,11 @@ object loanDecisionService {
         e5ProducedAt = if (rs.getBoolean("is_customer")) rs.getLong("npl_requested_at") + (systemTime2 - rs.getLong("system_time")) else rs.getLong("income_requested_at") + (systemTime2 - rs.getLong("system_time"))
       )
     }
-    override protected def getKafkaTopic: String = "loan_decision_result_notification"
+    override protected def getKafkaTopic: String = "loan_decision_result_disbursement"
     override protected def getAvroSchema: String = """
       {
         "type": "record",
-        "name": "LoanDecisionResultNotification",
+        "name": "LoanDecisionResultDisbursement",
         "namespace": "loan",
         "fields": [
           {"name": "requestId", "type": "string"},
@@ -417,7 +417,7 @@ object loanDecisionService {
       }
     """
 
-    override protected def getToGenericRecord: (LoanDecisionNotificationRecord, GenericRecord) => Unit = (record, avroRecord) => {
+    override protected def getToGenericRecord: (LoanDecisionDisbursementRecord, GenericRecord) => Unit = (record, avroRecord) => {
       avroRecord.put("requestId", record.requestId)
       avroRecord.put("applicationId", record.applicationId)
       avroRecord.put("customerId", record.customerId)
@@ -433,7 +433,7 @@ object loanDecisionService {
       avroRecord.put("e5ProducedAt", record.e5ProducedAt)
     }
 
-    override protected def getKeyExtractor: Option[LoanDecisionNotificationRecord => Array[Byte]] =
+    override protected def getKeyExtractor: Option[LoanDecisionDisbursementRecord => Array[Byte]] =
       Some(record => record.requestId.getBytes())
 
     override protected def getKafkaProperties: Properties = {
@@ -445,8 +445,8 @@ object loanDecisionService {
       props
     }
 
-    override protected def getTypeInformation: TypeInformation[LoanDecisionNotificationRecord] = {
-      TypeInformation.of(classOf[LoanDecisionNotificationRecord])
+    override protected def getTypeInformation: TypeInformation[LoanDecisionDisbursementRecord] = {
+      TypeInformation.of(classOf[LoanDecisionDisbursementRecord])
     }
 
   }

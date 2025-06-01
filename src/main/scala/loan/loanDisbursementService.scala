@@ -7,7 +7,16 @@ import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala.createTypeInformation
 import org.apache.flink.streaming.api.functions.sink.SinkFunction
 import target.AnalyticalStreamConsumer
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, Future}
 
+object loanDisbursementService {
+
+
+  /*******************************************************************************/
+  /**************************** event6 - Consumer ********************************/
+  /*******************************************************************************/
 
 
 class InfluxDBSink(
@@ -87,8 +96,7 @@ class InfluxDBSink(
   }
 }
 
-// Case class for loan decision notification record (from your original code)
-case class LoanDecisionNotificationAnalyticsRecord(
+case class LoanDisbursementAnalyticsRecord (
                                                     requestId: String,
                                                     applicationId: String,
                                                     customerId: Int,
@@ -104,69 +112,20 @@ case class LoanDecisionNotificationAnalyticsRecord(
                                                     e5ProducedAt: Long
                                                   ) extends Serializable
 
-// Mapper classes (from your original code)
-class LoanDecisionRecordMapper extends MapFunction[GenericRecord, LoanDecisionNotificationAnalyticsRecord] with Serializable {
-  override def map(record: GenericRecord): LoanDecisionNotificationAnalyticsRecord = {
-    try {
-      println(s"Analytics Consumer - Processing record: ${record.toString}")
 
-      LoanDecisionNotificationAnalyticsRecord(
-        requestId = record.get("requestId").toString,
-        applicationId = record.get("applicationId").toString,
-        customerId = record.get("customerId").toString.toInt,
-        incomeRequestedAt = Option(record.get("incomeRequestedAt")).map(_.toString.toLong).getOrElse(0L),
-        systemTime = record.get("systemTime").toString.toLong,
-        isCustomer = record.get("isCustomer").toString.toBoolean,
-        nplRequestedAt = Option(record.get("nplRequestedAt")).map(_.toString.toLong).getOrElse(0L),
-        creditScore = record.get("creditScore").toString.toLong,
-        predictedNpl = record.get("predictedNpl").toString.toDouble,
-        debtToIncomeRatio = record.get("debtToIncomeRatio").toString.toDouble,
-        loanDecision = record.get("loanDecision").toString.toBoolean,
-        loanAmount = record.get("loanAmount").toString.toDouble,
-        e5ProducedAt = Option(record.get("e5ProducedAt")).map(_.toString.toLong).getOrElse(0L)
-      )
-    } catch {
-      case e: Exception =>
-        println(s"Analytics Consumer - Error processing record: ${e.getMessage}")
-        e.printStackTrace()
-        throw e
-    }
-  }
-}
-
-// Analytics mapper to avoid lambda capture issues
-class LoanDecisionAnalyticsMapper extends MapFunction[LoanDecisionNotificationAnalyticsRecord, LoanAnalytics] with Serializable {
-  override def map(record: LoanDecisionNotificationAnalyticsRecord): LoanAnalytics = {
-    val currentTime = System.currentTimeMillis()
-
-    // Calculate processing time
-    val processingTime = if (record.isCustomer && record.nplRequestedAt > 0) {
-      currentTime - record.nplRequestedAt
-    } else if (record.incomeRequestedAt > 0) {
-      currentTime - record.incomeRequestedAt
-    } else {
-      currentTime - record.systemTime
-    }
-
-    println(s"Converting to analytics - Request: ${record.requestId}, Decision: ${record.loanDecision}, Amount: ${record.loanAmount}, Risk: ${record.predictedNpl}, ProcTime: $processingTime")
-
-    LoanAnalytics(
-      timestamp = currentTime,
-      isApproved = record.loanDecision,
-      loanAmount = if (record.loanDecision) record.loanAmount else 0.0,
-      riskScore = record.predictedNpl,
-      processingTime = processingTime
-    )
-  }
-}
-
-// Schema constant
-object LoanDecisionSchemas {
-  val SCHEMA_STRING_LOAN_DECISION_NOTIFICATION =
+// Now your concrete implementation using the generic base class
+class LoanDecisionAnalyticsConsumer extends AnalyticalStreamConsumer[
+  LoanDisbursementAnalyticsRecord,
+  LoanAnalytics,
+  AggregatedLoanAnalytics,
+  LoanAnalyticsAccumulator
+](
+  topicName = "loan_decision_result_disbursement",
+  schemaString =
     """
       |{
       |  "type": "record",
-      |  "name": "LoanDecisionResultNotification",
+      |  "name": "LoanDecisionResultDisbursement",
       |  "namespace": "loan",
       |  "fields": [
       |    {"name": "requestId", "type": "string"},
@@ -184,28 +143,67 @@ object LoanDecisionSchemas {
       |    {"name": "e5ProducedAt", "type": ["null", "long"], "default": null}
       |  ]
       |}
-    """.stripMargin
-}
-
-// Now your concrete implementation using the generic base class
-class LoanDecisionAnalyticsConsumer extends AnalyticalStreamConsumer[
-  LoanDecisionNotificationAnalyticsRecord,
-  LoanAnalytics,
-  AggregatedLoanAnalytics,
-  LoanAnalyticsAccumulator
-](
-  topicName = "loan_decision_result_notification",
-  schemaString = LoanDecisionSchemas.SCHEMA_STRING_LOAN_DECISION_NOTIFICATION,
+    """.stripMargin,
   consumerGroupId = "loan_decision_analytics_consumer",
   windowSizeSeconds = 1
 ) {
 
-  override protected def createRecordMapper(): MapFunction[GenericRecord, LoanDecisionNotificationAnalyticsRecord] = {
-    new LoanDecisionRecordMapper()
+  override protected def createRecordMapper(): MapFunction[GenericRecord, LoanDisbursementAnalyticsRecord] = {
+    new MapFunction[GenericRecord, LoanDisbursementAnalyticsRecord] {
+      override def map(record: GenericRecord): LoanDisbursementAnalyticsRecord = {
+        try {
+          println(s"Analytics Consumer - Processing record: ${record.toString}")
+
+          LoanDisbursementAnalyticsRecord(
+            requestId = record.get("requestId").toString,
+            applicationId = record.get("applicationId").toString,
+            customerId = record.get("customerId").toString.toInt,
+            incomeRequestedAt = Option(record.get("incomeRequestedAt")).map(_.toString.toLong).getOrElse(0L),
+            systemTime = record.get("systemTime").toString.toLong,
+            isCustomer = record.get("isCustomer").toString.toBoolean,
+            nplRequestedAt = Option(record.get("nplRequestedAt")).map(_.toString.toLong).getOrElse(0L),
+            creditScore = record.get("creditScore").toString.toLong,
+            predictedNpl = record.get("predictedNpl").toString.toDouble,
+            debtToIncomeRatio = record.get("debtToIncomeRatio").toString.toDouble,
+            loanDecision = record.get("loanDecision").toString.toBoolean,
+            loanAmount = record.get("loanAmount").toString.toDouble,
+            e5ProducedAt = Option(record.get("e5ProducedAt")).map(_.toString.toLong).getOrElse(0L)
+          )
+        } catch {
+          case e: Exception =>
+            println(s"Analytics Consumer - Error processing record: ${e.getMessage}")
+            e.printStackTrace()
+            throw e
+        }
+      }
+    }
   }
 
-  override protected def createAnalyticsMapper(): MapFunction[LoanDecisionNotificationAnalyticsRecord, LoanAnalytics] = {
-    new LoanDecisionAnalyticsMapper()
+  override protected def createAnalyticsMapper(): MapFunction[LoanDisbursementAnalyticsRecord, LoanAnalytics] = {
+    new MapFunction[LoanDisbursementAnalyticsRecord, LoanAnalytics] {
+      override def map(record: LoanDisbursementAnalyticsRecord): LoanAnalytics = {
+        val currentTime = System.currentTimeMillis()
+
+        // Calculate processing time
+        val processingTime = if (record.isCustomer && record.nplRequestedAt > 0) {
+          currentTime - record.nplRequestedAt
+        } else if (record.incomeRequestedAt > 0) {
+          currentTime - record.incomeRequestedAt
+        } else {
+          currentTime - record.systemTime
+        }
+
+        println(s"Converting to analytics - Request: ${record.requestId}, Decision: ${record.loanDecision}, Amount: ${record.loanAmount}, Risk: ${record.predictedNpl}, ProcTime: $processingTime")
+
+        LoanAnalytics(
+          timestamp = currentTime,
+          isApproved = record.loanDecision,
+          loanAmount = if (record.loanDecision) record.loanAmount else 0.0,
+          riskScore = record.predictedNpl,
+          processingTime = processingTime
+        )
+      }
+    }
   }
 
   // <IN, ACCUMULATOR, OUT>
@@ -213,12 +211,12 @@ class LoanDecisionAnalyticsConsumer extends AnalyticalStreamConsumer[
     new LoanAnalyticsAggregateFunction()
   }
 
-  override protected def createSink(): SinkFunction[AggregatedLoanAnalytics] = {
-    new InfluxDBSink("http://localhost:8086", "loan_analytics", "admin", "admin123")
+  override protected def createSink(): Option[SinkFunction[AggregatedLoanAnalytics]] = {
+    Some(new InfluxDBSink("http://localhost:8086", "loan_analytics", "admin", "admin123"))
   }
 
-  override protected implicit def getRecordTypeInformation: TypeInformation[LoanDecisionNotificationAnalyticsRecord] =
-    createTypeInformation[LoanDecisionNotificationAnalyticsRecord]
+  override protected implicit def getRecordTypeInformation: TypeInformation[LoanDisbursementAnalyticsRecord] =
+    createTypeInformation[LoanDisbursementAnalyticsRecord]
 
   override protected implicit def getAnalyticsTypeInformation: TypeInformation[LoanAnalytics] =
     createTypeInformation[LoanAnalytics]
@@ -227,22 +225,27 @@ class LoanDecisionAnalyticsConsumer extends AnalyticalStreamConsumer[
     createTypeInformation[AggregatedLoanAnalytics]
 }
 
-// Main object to run the analytics consumer
-object LoanAnalyticsService {
+
+  /*******************************************************************************/
+  /******************************** EXECUTION ************************************/
+  /*******************************************************************************/
+
+
   def main(args: Array[String]): Unit = {
-    println("🚀 Starting Loan Decision Analytics Service...")
+
+    // Create futures for consumer and producer
+    val consumerFuture = Future {
+      new LoanDecisionAnalyticsConsumer().execute()
+    }
+
+    // Run both processes
+    val combinedFuture = Future.sequence(Seq(consumerFuture))
 
     try {
-      val analyticsConsumer = new LoanDecisionAnalyticsConsumer()
-      println("📊 Initializing analytics consumer...")
-      println("🔗 Connecting to Kafka topic: loan_decision_result_notification")
-      println("📈 Window size: 1 second")
-      println("💾 Writing results to InfluxDB...")
-
-      analyticsConsumer.execute()
+      Await.result(combinedFuture, Duration.Inf)
     } catch {
       case e: Exception =>
-        println(s"❌ Error starting analytics service: ${e.getMessage}")
+        println(s"Error in one of the processes: ${e.getMessage}")
         e.printStackTrace()
         System.exit(1)
     }
