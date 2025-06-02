@@ -91,7 +91,6 @@ This system processes loan applications through a series of microservices that e
 ## Key Features
 
 - **Asynchronous Processing**: Event-driven architecture ensures scalability and resilience
-- **AI-Powered Decision Making**: Leverages machine learning models for income and NPL predictions
 - **Real-time vs Batch Processing**: Optimizes performance based on customer type
 - **Multi-Channel Support**: Accepts applications from mobile, web, and branch interfaces
 - **Comprehensive Audit Trail**: All events and decisions are logged for compliance
@@ -139,43 +138,122 @@ This system processes loan applications through a series of microservices that e
 
 ## Installation
 
+### Prerequisites Setup
+
+1. **Install Java 8 or 11**
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get install openjdk-11-jdk
+   
+   # macOS
+   brew install openjdk@11
+   ```
+
+2. **Install SBT**
+   ```bash
+   # Ubuntu/Debian
+   echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
+   echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
+   curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
+   sudo apt-get update
+   sudo apt-get install sbt
+   
+   # macOS
+   brew install sbt
+   ```
+
+3. **Install Apache Flink 1.13.2**
+   ```bash
+   wget https://archive.apache.org/dist/flink/flink-1.13.2/flink-1.13.2-bin-scala_2.12.tgz
+   tar -xzf flink-1.13.2-bin-scala_2.12.tgz
+   cd flink-1.13.2
+   ./bin/start-cluster.sh
+   ```
+
+### Project Setup
+
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/loan-processing-system.git
+git clone https://github.com/your-org/scala-realtime-loan-allocation.git
+cd scala-realtime-loan-allocation
 
-# Navigate to project directory
-cd loan-processing-system
-
-# Build with SBT
-sbt clean compile
+# Download dependencies and compile
+sbt update
+sbt compile
 
 # Run tests
 sbt test
 
-# Create assembly JAR
+# Create fat JAR with all dependencies
 sbt assembly
 
-# Deploy services (example using Docker)
+# Run specific microservice (example)
+sbt "run com.loanprocessing.LoanDecisionService"
+```
+
+### Docker Deployment (Recommended)
+
+```bash
+# Build Docker images for all services
+docker build -t loan-processing/las -f docker/Dockerfile.las .
+docker build -t loan-processing/ldes -f docker/Dockerfile.ldes .
+docker build -t loan-processing/ips -f docker/Dockerfile.ips .
+docker build -t loan-processing/npl -f docker/Dockerfile.npl .
+docker build -t loan-processing/ns -f docker/Dockerfile.ns .
+docker build -t loan-processing/ldis -f docker/Dockerfile.ldis .
+
+# Start all services with docker-compose
 docker-compose up -d
 ```
 
 ## Build Configuration
 
-The project uses SBT (Scala Build Tool) with the following key dependencies:
+The project uses SBT with the following `build.sbt` configuration:
 
 ```scala
+name := "scala-realtime-loan-allocation"
+version := "0.1"
 scalaVersion := "2.12.10"
-flinkVersion := "1.13.2"
 ```
 
-### Main Dependencies
-- **Apache Flink**: Stream processing framework
-- **Kafka Connector**: For event-driven architecture
-- **PostgreSQL & Cassandra**: Database connectivity
-- **InfluxDB Client**: Time-series metrics
-- **Elasticsearch**: Log aggregation
-- **Apache Commons Math**: Statistical analysis
-- **OpenCSV**: Data export capabilities
+### Dependency Groups
+
+1. **Flink Core Dependencies**
+   - flink-clients, flink-scala, flink-streaming-scala (1.13.2)
+   - flink-table-api-scala-bridge, flink-table-planner-blink
+   - Apache Avro (1.10.2) for serialization
+   - json4s-jackson (4.0.6) for JSON processing
+
+2. **Flink Connectors**
+   - flink-connector-kafka (with Avro exclusion)
+   - flink-connector-cassandra
+   - flink-connector-jdbc
+   - PostgreSQL driver (42.2.2)
+
+3. **Analytics & Monitoring**
+   - InfluxDB Java Client (6.7.0) - Grafana integration
+   - Elasticsearch REST Client (7.10.2) - Kibana integration
+   - Flink Metrics Dropwizard
+   - OpenCSV (5.6) - Tableau exports
+   - Commons Math3 (3.6.1) - Statistical analysis
+   - OkHttp3 (4.9.3) - REST API calls
+
+4. **Logging**
+   - Logback Core & Classic (1.2.10)
+
+### Troubleshooting Dependencies
+
+If you encounter dependency conflicts:
+```bash
+# Check dependency tree
+sbt dependencyTree
+
+# Clean and rebuild
+sbt clean compile
+
+# Update specific dependencies
+sbt update
+```
 
 ## Configuration
 
@@ -224,37 +302,62 @@ api:
   timeout: 30s
 ```
 
-## Monitoring
+## Development
+
+### Project Structure
+```
+scala-realtime-loan-allocation/
+├── build.sbt
+├── project/
+│   ├── build.properties
+│   └── plugins.sbt
+├── src/
+│   ├── main/
+│   │   ├── scala/
+│   │   │   └── com/loanprocessing/
+│   │   │       ├── las/          # Loan Application Service
+│   │   │       ├── ldes/         # Loan Decision Service
+│   │   │       ├── ips/          # Income Prediction Service
+│   │   │       ├── npl/          # NPL Prediction Service
+│   │   │       ├── ns/           # Notification Service
+│   │   │       └── ldis/         # Loan Disbursement Service
+│   │   └── resources/
+│   │       ├── application.conf
+│   │       └── logback.xml
+│   └── test/
+│       └── scala/
+└── docker/
+    ├── docker-compose.yml
+    └── Dockerfile.*
+```
+
+### Running Individual Services
+
+```bash
+# Start Flink cluster first
+$FLINK_HOME/bin/start-cluster.sh
+
+# Run specific service with SBT
+sbt "runMain com.loanprocessing.ldes.LoanDecisionServiceApp"
+
+# Or submit to Flink cluster
+$FLINK_HOME/bin/flink run -c com.loanprocessing.ldes.LoanDecisionServiceApp \
+  target/scala-2.12/scala-realtime-loan-allocation-assembly-0.1.jar
+
+# Monitor Flink jobs
+open http://localhost:8081
+```
+
+
+
+3. **Monitoring Setup**
+   - Configure Flink metrics reporter for InfluxDB
+   - Set up Grafana dashboards
+   - Configure log aggregation to Elasticsearch
+   - Set up alerts for critical metrics
 
 ### Real-time Dashboards
 - **Grafana**: Connect to InfluxDB for real-time metrics visualization
   - Loan processing rates
   - Decision latency metrics
-  - Service health indicators
-  - Resource utilization
 
-### Log Analysis
-- **Kibana**: Connected to Elasticsearch for:
-  - Error tracking and debugging
-  - Audit trail analysis
-  - Performance profiling
-
-### Service Endpoints
-- Service health: `/health`
-- Metrics endpoint: `/metrics`
-- Flink job status: `http://flink-jobmanager:8081`
-
-### Key Metrics
-- Kafka consumer lag per topic
-- Event processing latency
-- Model prediction response times
-- Database connection pool status
-- Loan approval/rejection rates
-
-## Contributing
-
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
-
-## License
-
-This project is licensed under the [LICENSE_TYPE] License - see the [LICENSE.md](LICENSE.md) file for details.
