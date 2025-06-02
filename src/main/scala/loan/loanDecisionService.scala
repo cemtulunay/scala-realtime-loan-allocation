@@ -50,7 +50,7 @@ object loanDecisionService {
   // Implementation for Income Prediction Producer
   class IncomePredictionProducer extends StreamProducer[predictionRequest, predictionRequest](
     keySelector = _.requestId.getOrElse(""),
-    sleepMillisPerEvent = 2500
+    sleepMillisPerEvent = 5000
   )(implicitly[TypeInformation[predictionRequest]], implicitly[TypeInformation[predictionRequest]]) {
     override protected def schemaString: String = SCHEMA_STRING_INCOME_PREDICTION
     override protected def topicName: String = "income_prediction_request"
@@ -103,7 +103,7 @@ object loanDecisionService {
   // Implementation for NPL Producer
   class NplPredictionProducer extends StreamProducer[predictionRequest, predictionRequest](
     keySelector = _.customerId.getOrElse(0).toString,
-    sleepMillisPerEvent = 500
+    sleepMillisPerEvent = 2500
   )(implicitly[TypeInformation[predictionRequest]], implicitly[TypeInformation[predictionRequest]]) {
     override protected def schemaString: String = SCHEMA_STRING_NPL_PREDICTION
     override protected def topicName: String = "npl_prediction_request"
