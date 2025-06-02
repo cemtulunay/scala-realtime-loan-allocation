@@ -2,6 +2,9 @@
 
 A microservices-based loan processing system that leverages event-driven architecture with Kafka for asynchronous communication and AI models for decision making.
 
+<img width="1703" alt="Screenshot 2025-06-02 at 1 18 37 AM" src="https://github.com/user-attachments/assets/753a3232-532f-403b-8065-6b2e96d3c04c" />
+
+
 ## Overview
 
 This system processes loan applications through a series of microservices that evaluate income prediction, non-performing loan (NPL) risk, and ultimately make loan decisions. The architecture uses both synchronous API calls and asynchronous event-driven patterns to ensure efficient and scalable loan processing.
