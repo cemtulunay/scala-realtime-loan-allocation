@@ -327,7 +327,7 @@ External libraries should be visible as in that image.
 
 # Local Run
 
-## A-) Rise up the Infrsastructure
+## A-) Launch the Infrsastructure
 
 ### 1-) Kafka
 terminal1, terminal2 are must. rise up the Kafka on docker and create topics
