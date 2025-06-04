@@ -1,21 +1,21 @@
-# Loan Processing System
+# Real-Time Loan Processing System
 
 A microservices-based loan processing system that leverages event-driven architecture with Kafka for asynchronous communication and constrained random data generation and randomly enriching data simulating "AI models" for decision making.
 
 
-## Overview
+# Overview
 
 This system processes loan applications through a series of microservices that evaluate income prediction (realtime for prospect customers, batch for customers), non-performing loan (NPL) risk, and ultimately make loan decisions. The architecture uses both synchronous API calls (API calls are imaginary) and asynchronous event-driven patterns to ensure efficient and scalable loan processing.
 
-* MicorServices are imaginary.
+* MicorServices are imaginary
 * Data is generated radomly (constrained random data generation)
 * Data enriched in microservices randomly (simulating AI as decision maker)
 * Data produced and consumed by Flink and flow between the Microservices by Kafka Topics
 * Finally after Data turn back to LDES ("Loan Decision Service") randomly (constrained random data enrichment) Loan Decision made with the inputs from income prediction then npl service
-* "Loan Disbursement Service" actually receives the final data from LDES and use it for time series analysis with realt-time aggregations on a Grafana dashboard powered by influxDB
+* "Loan Disbursement Service" actually receives the final data from LDES and use it for time series analysis with real-time aggregations on a Grafana dashboard powered by influxDB
 * "Loan Notification Service" works with final data similar as disbursement service. Provides realtime notifications and alerts
 
-### External Systems (This part is imaginary and generated data used in place of real systems and values for illustrative purposes)
+### External Systems (This part is imaginary)
 
 - **Data Warehouse (DWH)** - Hive-based system storing customer demographics and pre-calculated income predictions
 - **Mobile Banking App** - Customer interface for loan applications
@@ -33,7 +33,7 @@ This system processes loan applications through a series of microservices that e
 | **Notification Service** | NS | Sends notifications to applicants about loan decisions |
 | **Loan Disbursement Service** | LDIS | Handles the actual loan disbursement process |
 
-## Event-Driven Architecture
+### Event-Driven Architecture
 
 <img width="1703" alt="Screenshot 2025-06-02 at 1 18 37 AM" src="https://github.com/user-attachments/assets/753a3232-532f-403b-8065-6b2e96d3c04c" />
 
@@ -50,32 +50,26 @@ This system processes loan applications through a series of microservices that e
 | event6 | LDES   | LDIS   | loan_decision_result_disbursement    | event6 - producer  | event6 - consumer  | loan_result      | event4-consumer  | event5-producer<br>event6-producer | event5-producer<br>event6-producer |
 
 
-## Data Flow
+### Data Flow
 
-### 1. Application Entry
+##### 1. Application Entry
 - User submits loan application (Mobile/Web/Branch)
 - **LAS** receives request
 - LAS calls **DWH API** for demographics
 - LAS sends sync request to **LDES**
 
----
-
-### 2. Customer Type Check
+##### 2. Customer Type Check
 - **LDES** checks if applicant is an existing customer
   - **Customer**: Uses pre-calculated income prediction from **DWH**
   - **Prospect**: Triggers real-time income prediction
 
----
-
-### 3. Income Prediction (Prospects Only)
+##### 3. Income Prediction (Prospects Only)
 - `LDES → Flink (Producer) → Kafka → income_prediction_request`
 - **IPS** consumes event
 - IPS runs **AI model** (imaginary, just enriches data randomly)
 - `IPS → Flink (Consumer) → Kafka → income_prediction_result`
 
----
-
-### 4. NPL Risk Assessment
+##### 4. NPL Risk Assessment
 - `LDES → Flink (Producer) → Kafka → npl_prediction_request`
 - **NPL** consumes request
 - NPL retrieves income data:
@@ -84,50 +78,42 @@ This system processes loan applications through a series of microservices that e
 - NPL runs **risk model**
 - `NPL → Flink (Consumer) → Kafka → npl_prediction_result`
 
----
-
-### 5. Loan Decision
+##### 5. Loan Decision
 - **LDES** consumes `npl_prediction_result`
 - LDES evaluates all inputs
 - LDES makes **final decision**
 - `LDES → Flink (Producer) → Kafka → loan_decision_result_notification`
 - `LDES → Flink (Producer) → Kafka → loan_decision_result_disbursement`
 
----
-
-### 6. Notification
+##### 6. Notification
 - **NS** consumes `loan_decision_result_notification`
 - NS sends **SMS/Email/Push** notification
 - `NS → Flink (Consumer) → Kafka → loan_decision_result_notification`
 
----
-
-### 7. Disbursement
+##### 7. Disbursement
 - **LDIS** consumes `loan_decision_result_disbursement`
   - **Approved**: LDIS calls **payment API**
   - **Rejected**: No action
 - `LDIS → Flink (Consumer) → Kafka → loan_decision_result_disbursement`
 
----
 
-## Technology Stack
+### Technology Stack
 
-### Core Technologies
+#### Core Technologies
 - **Language**: Scala 2.12.10
 - **Stream Processing**: Apache Flink 1.13.2
 - **Message Broker**: Apache Kafka
 - **Serialization**: Apache Avro 1.10.2
 - **JSON Processing**: json4s-jackson 4.0.6
 
-### Databases
+#### Databases
 - **PostgreSQL** 42.2.2 - Primary relational database
-- **Apache Cassandra** - Distributed NoSQL for high-volume data
 - **InfluxDB** - Time-series data for metrics and monitoring
 
-### Analytics & Monitoring
+#### Analytics & Monitoring
 - **Grafana** - Real-time dashboards via InfluxDB integration
 
-## Prerequisites
+### Prerequisites
 
 | Component              | Description         |
 |------------------------|---------------------|
@@ -140,7 +126,8 @@ This system processes loan applications through a series of microservices that e
 | InfluxDB for Metrics   | runs on Docker, no installation needed   |
 | Grafana                | runs on Docker, no installation needed   |
 
-## Installation
+
+# Installation
 
 ### Prerequisites Setup
 
@@ -175,6 +162,15 @@ This system processes loan applications through a series of microservices that e
    brew install sbt
    ```
 
+3. **Install Scala**
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get install scala
+
+   # macOS  
+   brew install scala@2.12
+   ```
+
 5. **Install Apache Flink 1.13.2**
    ```bash
    wget https://archive.apache.org/dist/flink/flink-1.13.2/flink-1.13.2-bin-scala_2.12.tgz
@@ -202,67 +198,86 @@ sbt assembly
 
 ```
 
-### Docker Deployment (Recommended)
+# Development
 
-```bash
-# Build Docker images for all services
-docker build -t loan-processing/las -f docker/Dockerfile.las .
-docker build -t loan-processing/ldes -f docker/Dockerfile.ldes .
-docker build -t loan-processing/ips -f docker/Dockerfile.ips .
-docker build -t loan-processing/npl -f docker/Dockerfile.npl .
-docker build -t loan-processing/ns -f docker/Dockerfile.ns .
-docker build -t loan-processing/ldis -f docker/Dockerfile.ldis .
+### Generic Classes
 
-# Start all services with docker-compose
-docker-compose up -d
-```
+#### Generator
+- `incomePredictionRequestDataGen`: This class generates synthetic loan prediction request data for testing Apache Flink streaming application.
+  - Emits events with sequential timestamps and watermarks
+  - Allows configurable delays between events
+  - Supports parallel execution in Flink
 
-## Build Configuration
+#### Serializer
+- `GenericAvroDeserializer`: This class deserializes Avro-encoded messages from Kafka into GenericRecord objects for Flink processing. Every event consumer uses that class.
+  - Enables schema-based validation during deserialization
+    - Kafka stores data as bytes, Flink needs structured objects
+    - Avro provides schema evolution and compact binary format
+    - Generic approach works with any Avro schema without creating specific classes
+- `GenericAvroSerializer`: This class serializes Flink objects into Avro-encoded bytes for Kafka publishing for the same reasons with GenericAvroDeserializer class. Every event producer uses that class.
+- `GenericRecordKryoSerializer`: For 2 criucial reasons Kryo internal serializer is used. Every event consumer uses that class.
+  - `Flink State Management`: Enables Avro GenericRecords to be stored in Flink's stateful operations (keyed state, windows, checkpoints) - without this, you can't maintain state for Avro records.
+  - `Schema Preservation`: Maintains the complete Avro schema during serialization, ensuring records can be correctly reconstructed after checkpointing/recovery - critical for fault tolerance.
 
-The project uses SBT with the following `build.sbt` configuration:
+#### Source
+- `AbstractPostgreSQLToKafkaProducer`: Low-level component that handles the actual database polling, connection management, and record extraction - the "how" of reading from PostgreSQL. 
+- `GenericPostgreSQLSource`: High-level orchestrator that wires together the source, serializer, and Kafka sink into a complete Flink job - the "what" of the entire pipeline.
+  - Reuse the PostgreSQL source with different sinks (not just Kafka)
+  - Swap implementations without changing the pipeline structure (GenericMySQLSource, GenericMongoDBSource, FileSource)
+  - `AbstractPostgreSQLToKafkaProducer` and `GenericPostgreSQLSource` Used combined for producers reading data from postgreSQL DB.
+- `StreamProducer`: Used for producers using data generator
+  - Generic Type Conversion (S → T): Enables safe transformation from any source data format (S) to Kafka-ready format (T) without hardcoding - critical for handling different data types across your microservices (income predictions, NPL results, loan decisions)
+  - Complete Pipeline Template: Provides the entire streaming infrastructure (source → transformation → state management → Kafka sink) as a reusable template - each microservice just implements the abstract methods instead of rebuilding the entire pipeline.
 
-```scala
-name := "scala-realtime-loan-allocation"
-version := "0.1"
-scalaVersion := "2.12.10"
-```
+#### Target
+- `AnlyticalStreamConsumer`: Used for Consumers using influxDB as a sink for real-time analytics
+- `StreamConsumer`: Used for Consumers using postgreSQL as a sink
 
-### Dependency Groups
+---
 
-1. **Flink Core Dependencies**
-   - flink-clients, flink-scala, flink-streaming-scala (1.13.2)
-   - flink-table-api-scala-bridge, flink-table-planner-blink
-   - Apache Avro (1.10.2) for serialization
-   - json4s-jackson (4.0.6) for JSON processing
+### Working Class Patterns
 
-2. **Flink Connectors**
-   - flink-connector-kafka (with Avro exclusion)
-   - flink-connector-cassandra
-   - flink-connector-jdbc
-   - PostgreSQL driver (42.2.2)
+**Pattern 1 – Producer with random data generator**  
+`incomePredictionRequestDataGen` → `predictionRequestGenerator` → `GenericAvroSerializer` → `StreamProducer` → `Kafka`
 
-3. **Analytics & Monitoring**
-   - InfluxDB Java Client (6.7.0) - Grafana integration
+**Pattern 2 – Producer reading data from PostgreSQL**  
+`PostgreSQL` → `GenericPostgreSQLSource` → `AbstractPostgreSQLToKafkaProducer` → `Kafka`
 
-4. **Logging**
-   - Logback Core & Classic (1.2.10)
+**Pattern 3 – Consumer sinks data to PostgreSQL**  
+`Kafka` → `GenericRecordKryoSerializer` → `GenericAvroDeserializer` → `StreamConsumer` → `PostgreSQL`
 
-### Troubleshooting Dependencies
+**Pattern 4 – Analytical consumer, sinks data to InfluxDB**  
+`Kafka` → `GenericRecordKryoSerializer` → `GenericAvroDeserializer` → `AnalyticalStreamConsumer` → `InfluxDB`
 
-If you encounter dependency conflicts:
-```bash
-# Check dependency tree
-sbt dependencyTree
+### Working Classes
 
-# Clean and rebuild
-sbt clean compile
+#### loanDecisionService
+- `event1` Producer: pattern1
+- `event3` Producer: pattern1
+- `event4` Consumer: pattern3
+- `event6` Producer: pattern2
+- **Execution:** `def main` runs all 4 pieces in parallel
 
-# Update specific dependencies
-sbt update
-```
+#### incomePredictionService
+- `event1` Consumer: pattern3
+- `event2` Producer: pattern2
+- **Execution:** `def main` runs all 2 pieces in parallel
 
+#### nonPerformingLoanService
+- `event2` Consumer: pattern3
+- `event3` Consumer: pattern3
+- `event4` Producer: pattern2
+- **Execution:** `def main` runs all 3 pieces in parallel
 
-## Development
+#### loanDisbursementService
+- `event2` Consumer: pattern4
+- **Execution:** `def main` runs all 1 piece
+
+#### utils
+- Functions for Constrained Random Data Generation
+- Loan Disbursement Service – Realtime Analytical Functions
+  
+---
 
 ### Project Structure
 ```
@@ -291,33 +306,17 @@ scala-realtime-loan-allocation/
     └── Dockerfile.*
 ```
 
-### Running Individual Services
+### Docker Deployment (Recommended)
 
 ```bash
-# Start Flink cluster first
-$FLINK_HOME/bin/start-cluster.sh
+# Build Docker images for all services
+docker build -t loan-processing/las -f docker/Dockerfile.las .
+docker build -t loan-processing/ldes -f docker/Dockerfile.ldes .
+docker build -t loan-processing/ips -f docker/Dockerfile.ips .
+docker build -t loan-processing/npl -f docker/Dockerfile.npl .
+docker build -t loan-processing/ns -f docker/Dockerfile.ns .
+docker build -t loan-processing/ldis -f docker/Dockerfile.ldis .
 
-# Run specific service with SBT
-sbt "runMain com.loanprocessing.ldes.LoanDecisionServiceApp"
-
-# Or submit to Flink cluster
-$FLINK_HOME/bin/flink run -c com.loanprocessing.ldes.LoanDecisionServiceApp \
-  target/scala-2.12/scala-realtime-loan-allocation-assembly-0.1.jar
-
-# Monitor Flink jobs
-open http://localhost:8081
+# Start all services with docker-compose
+docker-compose up -d
 ```
-
-
-
-3. **Monitoring Setup**
-   - Configure Flink metrics reporter for InfluxDB
-   - Set up Grafana dashboards
-   - Configure log aggregation to Elasticsearch
-   - Set up alerts for critical metrics
-
-### Real-time Dashboards
-- **Grafana**: Connect to InfluxDB for real-time metrics visualization
-  - Loan processing rates
-  - Decision latency metrics
-
