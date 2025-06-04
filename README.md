@@ -592,9 +592,9 @@ If you import the existing dashboard. You may expect to see a dashboard as below
 
 ## B-) Run Locally
 
-Running locally means here, without deploying flink into docker. The rest of the infrastructure will run on the docker, thats why we 1st rose up the infrastructure for the rest.
-Now the environment is ready. Once you can run the system locally then we can create fat jar file for the flink project and deploy it into docker and run on docker completely.
-When we run locally it will be faster to make changes and observe differences. Once we are sure about the version of the code we can create fat file and deploy it to docker.
+Running locally means executing the Flink project outside of Docker, while the rest of the infrastructure continues to run inside Docker containers. That's why we first brought up the infrastructure components using Docker.
+At this point, the environment is ready. Running the system locally allows for quicker development—making changes and observing the results is faster. Once we're confident in the current version of the code, 
+we can package it as a fat JAR and deploy it into Docker, enabling the entire system to run within containers. This workflow helps streamline development and testing before moving to a fully containerized setup.
 
 As seen here and in the same order you can simply run the "def main" functions and data will start to flow and you can see realtime analytics on influxDB UI and Grafana dashboard
 Thats the order for the local run
